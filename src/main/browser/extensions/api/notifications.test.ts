@@ -82,6 +82,46 @@ function invoke(caller: BrowserExtensionCaller, method: string, args: unknown[] 
 const options = { type: 'basic', title: 'Notification', message: 'Retire with its extension' }
 
 describe('notification extension ownership', () => {
+  it.each(['create', 'update'])(
+    'forgets a failed native %s without reporting a dismissal',
+    (method) => {
+      const { caller } = notificationCaller(`failed-${method}`)
+      const sibling = { ...caller, extension: { ...caller.extension, id: 'b'.repeat(32) } }
+      invoke(caller, 'create', ['failed', options])
+      if (method === 'update') {
+        invoke(caller, 'update', ['failed', { message: 'updated' }])
+      }
+      const failed = mocks.notifications.at(-1)
+      if (!failed) {
+        throw new Error('Missing native notification')
+      }
+      invoke(sibling, 'create', ['live', options])
+      vi.clearAllMocks()
+
+      failed.emit('failed', {}, 'Native notification delivery failed')
+
+      expect(invoke(caller, 'getAll')).toEqual({})
+      expect(invoke(caller, 'update', ['failed', { message: 'retry' }])).toBe(false)
+      expect(invoke(caller, 'clear', ['failed'])).toBe(false)
+      expect(invoke(sibling, 'getAll')).toEqual({ live: true })
+      expect(failed.eventNames()).toEqual([])
+      expect(failed.close).not.toHaveBeenCalled()
+      expect(emitBrowserExtensionEvent).not.toHaveBeenCalled()
+
+      invoke(caller, 'create', ['failed', options])
+      failed.emit('failed', {}, 'Late old failure')
+      failed.emit('close', { reason: 'timedOut' })
+      expect(invoke(caller, 'getAll')).toEqual({ failed: true })
+      expect(invoke(caller, 'clear', ['failed'])).toBe(true)
+      expect(emitBrowserExtensionEvent).toHaveBeenLastCalledWith(
+        { session: caller.session, extensionId: caller.extension.id },
+        'notifications',
+        'onClosed',
+        ['failed', false]
+      )
+    }
+  )
+
   it('closes and forgets unloaded notifications while preserving sibling extensions and profiles', () => {
     const { caller, extensions } = notificationCaller('owner')
     const sibling = { ...caller, extension: { ...caller.extension, id: 'b'.repeat(32) } }
