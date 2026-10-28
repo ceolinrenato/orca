@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -52,6 +53,7 @@ const { BROWSER_EXTENSION_EVENT_CHANNEL, BROWSER_EXTENSION_INVOKE_CHANNEL } =
 const surface = await import('../../../preload/browser-extension-api-surface')
 const registry = await import('./browser-extension-namespace-registry')
 const host = await import('./browser-extension-api-host')
+const contexts = await import('./browser-extension-contexts')
 const { registerBrowserExtensionNamespaces } =
   await import('./register-browser-extension-namespaces')
 
@@ -89,7 +91,10 @@ function frameEvent(
   mocks.frames.set(`${processId}:${routingId}`, frame)
   return {
     frame,
-    event: { senderFrame: frame, sender: { id: 77, session: sess, once: vi.fn() } }
+    event: {
+      senderFrame: frame,
+      sender: Object.assign(new EventEmitter(), { id: 77, session: sess })
+    }
   }
 }
 
@@ -260,4 +265,123 @@ describe('extension API host', () => {
     host.emitBrowserExtensionEvent({}, 'probe', 'onPing', [{ n: 2 }])
     expect(listening.frame.send).toHaveBeenCalledTimes(1)
   })
+})
+
+describe('extension frame document ownership', () => {
+  const listen = { type: 'listen', namespace: 'probe', event: 'onPing', active: true }
+
+  it.each(['did-navigate', 'render-process-gone', 'destroyed'])(
+    'retires %s listeners while preserving other owners',
+    async (retirement) => {
+      const original = frameEvent(
+        `chrome-extension://${EXTENSION_ID}/page.html`,
+        extensionSession,
+        6,
+        1
+      )
+      const sibling = frameEvent(
+        `chrome-extension://${EXTENSION_ID}/sibling.html`,
+        extensionSession,
+        6,
+        2
+      )
+      sibling.event.sender.id = 88
+      await expect(invoke(original.event, listen)).resolves.toEqual({ ok: true, value: undefined })
+      await invoke(sibling.event, listen)
+      original.event.sender.emit(retirement)
+      host.emitBrowserExtensionEvent({}, 'probe', 'onPing', ['after retirement'])
+      expect(original.frame.send).not.toHaveBeenCalled()
+      expect(sibling.frame.send).toHaveBeenCalledTimes(1)
+      for (const event of ['did-navigate', 'render-process-gone', 'destroyed']) {
+        expect(original.event.sender.listenerCount(event)).toBe(0)
+      }
+      if (retirement !== 'destroyed') {
+        const successor = frameEvent(
+          `chrome-extension://${EXTENSION_ID}/new.html`,
+          extensionSession,
+          6,
+          3
+        )
+        successor.event.sender = original.event.sender
+        await invoke(successor.event, listen)
+        host.emitBrowserExtensionEvent({}, 'probe', 'onPing', ['successor'])
+        expect(successor.frame.send).toHaveBeenCalledTimes(1)
+        expect(original.frame.send).not.toHaveBeenCalled()
+        expect(sibling.frame.send).toHaveBeenCalledTimes(2)
+        successor.event.sender.emit('destroyed')
+      }
+      sibling.event.sender.emit('destroyed')
+    }
+  )
+
+  it('keeps the current document on same-document and uncommitted navigation', async () => {
+    const current = frameEvent(
+      `chrome-extension://${EXTENSION_ID}/page.html`,
+      extensionSession,
+      7,
+      1
+    )
+    await invoke(current.event, listen)
+    current.event.sender.emit('did-navigate-in-page')
+    current.event.sender.emit('will-navigate')
+    host.emitBrowserExtensionEvent({}, 'probe', 'onPing', ['current'])
+    expect(current.frame.send).toHaveBeenCalledTimes(1)
+    current.event.sender.emit('destroyed')
+  })
+
+  it('stops the listener precheck after the last listening document is replaced', async () => {
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the session boundary exposes the extensions, serviceWorkers and protocol members consumed by the actual host.
+    const isolated = { ...extensionSession } as unknown as Electron.Session
+    host.attachBrowserExtensionApiHostToSession(isolated, 'isolated')
+    const current = frameEvent(`chrome-extension://${EXTENSION_ID}/page.html`, isolated, 8, 1)
+    await invoke(current.event, { ...listen, filters: [{ urls: ['https://never.invalid/*'] }] })
+    expect(contexts.browserExtensionEventHasListener(isolated, 'probe', 'onPing')).toBe(true)
+    current.event.sender.emit('did-navigate')
+    expect(contexts.browserExtensionEventHasListener(isolated, 'probe', 'onPing')).toBe(false)
+    expect(contexts.getHostSessionState(isolated)?.frames.size).toBe(0)
+    host.forgetBrowserExtensionContexts(isolated)
+  })
+})
+
+it('keeps service-worker event ownership when a page document is replaced', async () => {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the session boundary copies the extensions, serviceWorkers and protocol members consumed by the actual host.
+  const isolated = { ...extensionSession } as unknown as Electron.Session
+  host.attachBrowserExtensionApiHostToSession(isolated, 'worker-survives')
+  const state = contexts.getHostSessionState(isolated)
+  expect(state).not.toBeNull()
+  if (!state) {
+    throw new Error('Session host was not attached')
+  }
+  const worker = contexts.ensureWorkerContext(
+    state,
+    EXTENSION_ID,
+    `chrome-extension://${EXTENSION_ID}/`
+  )
+  worker.events.add('probe.onPing')
+  const stream = { send: vi.fn(), close: vi.fn() }
+  worker.stream = stream
+  const page = frameEvent(`chrome-extension://${EXTENSION_ID}/page.html`, isolated, 9, 1)
+  await invoke(page.event, { type: 'listen', namespace: 'probe', event: 'onPing', active: true })
+  page.event.sender.emit('did-navigate')
+  host.emitBrowserExtensionEvent({ session: isolated }, 'probe', 'onPing', ['worker'])
+  expect(page.frame.send).not.toHaveBeenCalled()
+  expect(stream.send).toHaveBeenCalledTimes(1)
+  expect(stream.close).not.toHaveBeenCalled()
+  host.forgetBrowserExtensionContexts(isolated)
+})
+
+it('retires the current host after extension support restarts in the same document', async () => {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the session boundary copies the extensions, serviceWorkers and protocol members consumed by the actual host.
+  const isolated = { ...extensionSession } as unknown as Electron.Session
+  host.attachBrowserExtensionApiHostToSession(isolated, 'restarted')
+  const current = frameEvent(`chrome-extension://${EXTENSION_ID}/page.html`, isolated, 10, 1)
+  const listen = { type: 'listen', namespace: 'probe', event: 'onPing', active: true }
+  await invoke(current.event, listen)
+  host.forgetBrowserExtensionContexts(isolated)
+  host.attachBrowserExtensionApiHostToSession(isolated, 'restarted')
+  await invoke(current.event, listen)
+  current.event.sender.emit('did-navigate')
+  expect(contexts.getHostSessionState(isolated)?.frames.size).toBe(0)
+  expect(contexts.browserExtensionEventHasListener(isolated, 'probe', 'onPing')).toBe(false)
+  host.forgetBrowserExtensionContexts(isolated)
 })

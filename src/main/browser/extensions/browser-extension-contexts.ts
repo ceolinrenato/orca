@@ -1,3 +1,4 @@
+import { abortWhenRendererGone } from '../../ipc/renderer-lifetime-abort'
 import { forgetBrowserExtensionContextLifetime } from './browser-extension-context-lifetime'
 import { webFrameMain } from 'electron'
 import {
@@ -152,14 +153,13 @@ export function setFrameListening(
   setListenerFilters(context.filters, key, active ? filters : undefined)
   if (!trackedWebContents.has(webContents)) {
     trackedWebContents.add(webContents)
-    webContents.once('destroyed', () => {
-      for (const sessionState of stateBySession.values()) {
-        for (const [candidateKey, candidate] of sessionState.frames) {
-          if (candidate.webContentsId === webContents.id) {
-            sessionState.frames.delete(candidateKey)
-          }
+    abortWhenRendererGone(webContents).signal.addEventListener('abort', () => {
+      trackedWebContents.delete(webContents)
+      stateBySession.get(webContents.session)?.frames.forEach((candidate, candidateKey, frames) => {
+        if (candidate.webContentsId === webContents.id) {
+          frames.delete(candidateKey)
         }
-      }
+      })
     })
   }
 }

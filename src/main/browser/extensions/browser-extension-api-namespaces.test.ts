@@ -823,7 +823,10 @@ async function listenFrame(extensionId: string, namespace: string, event: string
   }
   mocks.frames.set(`3:${routingId}`, frame)
   await mocks.handlers.get(BROWSER_EXTENSION_INVOKE_CHANNEL)?.(
-    { senderFrame: frame, sender: { id: 40 + routingId, session, once: vi.fn() } },
+    {
+      senderFrame: frame,
+      sender: Object.assign(new EventEmitter(), { id: 40 + routingId, session })
+    },
     { type: 'listen', namespace, event, active: true }
   )
   return {
