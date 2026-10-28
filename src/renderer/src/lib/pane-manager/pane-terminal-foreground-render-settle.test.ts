@@ -190,4 +190,32 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
       vi.useRealTimers()
     }
   })
+
+  it('holds the trailing repair until the suppressed parses land instead of mid-parse', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+      const pending: (() => void)[] = []
+      terminal.write = (_data: string, callback?: () => void) => {
+        if (callback) {
+          pending.push(callback)
+        }
+      }
+
+      writeForegroundTerminalChunk(terminal, 'a', throttled)
+      writeForegroundTerminalChunk(terminal, 'b', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS * 3)
+      // A repair taken here would miss every row the backlog has not reached yet.
+      expect(terminal._core.refresh).not.toHaveBeenCalled()
+
+      for (const run of pending) {
+        run()
+      }
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS + 1)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+      expect(terminal._core.refresh).toHaveBeenLastCalledWith(0, terminal.rows - 1, true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

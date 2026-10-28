@@ -1,11 +1,21 @@
 import { forceRepaintThroughRenderPause } from './terminal-render-pause-release'
 import {
+  armTrailingForcedRefresh,
+  consumeSuppressedFollowupRefresh,
+  discardForcedRefreshWindow,
+  noteSuppressedParseLanded,
+  noteSuppressedRepair,
+  takeForcedRefreshSlot
+} from './terminal-forced-refresh-window'
+import {
   disposeParsedDirtyRows,
   readParsedDirtyRowSpan,
   resetParsedDirtyRows,
   type ParsedDirtyRowSpan
 } from './terminal-parsed-dirty-rows'
 import { runGuardedWriteCompletionStep } from './xterm-write-callback-guard'
+
+export { FORCED_REFRESH_MIN_MS } from './terminal-forced-refresh-window'
 
 export type ForegroundTerminalOutputTarget = {
   buffer?: {
@@ -33,95 +43,6 @@ type ForegroundTerminalWriteOptions = {
   shouldReleaseRenderPause?: () => boolean
   onParsed?: () => void
   onWriteFailure?: () => void
-}
-
-// Why here: the forced repaint is bounded where it actually runs, so queued batches drained back-to-back cannot each issue one.
-export const FORCED_REFRESH_MIN_MS = 100
-
-const lastForcedRefreshAtByTerminal = new WeakMap<ForegroundTerminalOutputTarget, number>()
-const trailingForcedRefreshByTerminal = new WeakMap<
-  ForegroundTerminalOutputTarget,
-  ReturnType<typeof setTimeout>
->()
-// Why: a suppressed repair still owes its next-frame repaint, so the repair that lands has to honor it.
-const suppressedFollowupRefreshByTerminal = new WeakMap<ForegroundTerminalOutputTarget, boolean>()
-
-/** Remember the next-frame repaint a suppressed repair was asked for. */
-function noteSuppressedFollowupRefresh(
-  terminal: ForegroundTerminalOutputTarget,
-  options: ForegroundTerminalWriteOptions
-): void {
-  if (options.followupViewportRefresh === true) {
-    suppressedFollowupRefreshByTerminal.set(terminal, true)
-  }
-}
-
-function consumeSuppressedFollowupRefresh(terminal: ForegroundTerminalOutputTarget): boolean {
-  const pending = suppressedFollowupRefreshByTerminal.get(terminal) === true
-  suppressedFollowupRefreshByTerminal.delete(terminal)
-  return pending
-}
-
-/** One time base, so every window comparison measures the same clock. */
-function now(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now()
-}
-
-/** Drop the pending trailing repair; a live repair is about to own those rows. */
-function cancelTrailingForcedRefresh(terminal: ForegroundTerminalOutputTarget): void {
-  const timer = trailingForcedRefreshByTerminal.get(terminal)
-  if (timer === undefined) {
-    return
-  }
-  clearTimeout(timer)
-  trailingForcedRefreshByTerminal.delete(terminal)
-}
-
-/** A suppressed repair must still land: repair every row dirtied since the last one, not just the last write's span. */
-function scheduleTrailingForcedRefresh(
-  terminal: ForegroundTerminalOutputTarget,
-  options: ForegroundTerminalWriteOptions
-): void {
-  if (trailingForcedRefreshByTerminal.has(terminal)) {
-    return
-  }
-  const timer = setTimeout(() => {
-    trailingForcedRefreshByTerminal.delete(terminal)
-    lastForcedRefreshAtByTerminal.set(terminal, now())
-    refreshVisibleRows(
-      terminal,
-      options.shouldRefreshViewportSynchronously?.() ?? true,
-      options.shouldReleaseRenderPause,
-      null
-    )
-    // A full-span repair owns every dirty row, so the next throttled repair starts a fresh window.
-    resetParsedDirtyRows(terminal)
-    if (consumeSuppressedFollowupRefresh(terminal)) {
-      // Why: batches suppressed since the last repair asked for a next-frame repaint; this is the repair that owes it.
-      scheduleViewportSettleRefresh(
-        terminal,
-        options.shouldRefreshViewportSynchronously,
-        options.shouldReleaseRenderPause
-      )
-    }
-  }, FORCED_REFRESH_MIN_MS)
-  timer.unref?.()
-  trailingForcedRefreshByTerminal.set(terminal, timer)
-}
-
-/** Claim the throttled repair slot, or arm the trailing repair that stands in for it. */
-function takeForcedRefreshSlot(
-  terminal: ForegroundTerminalOutputTarget,
-  options: ForegroundTerminalWriteOptions
-): boolean {
-  const last = lastForcedRefreshAtByTerminal.get(terminal) ?? Number.NEGATIVE_INFINITY
-  if (now() - last >= FORCED_REFRESH_MIN_MS) {
-    lastForcedRefreshAtByTerminal.set(terminal, now())
-    cancelTrailingForcedRefresh(terminal)
-    return true
-  }
-  scheduleTrailingForcedRefresh(terminal, options)
-  return false
 }
 
 const pendingViewportSettleRefreshByTerminal = new WeakMap<
@@ -252,6 +173,28 @@ function scheduleViewportSettleRefresh(
   pendingViewportSettleRefreshByTerminal.set(terminal, { kind: 'timeout', id })
 }
 
+/** Repair every row a suppressed batch dirtied, then honour the next-frame repaint it asked for. */
+function repairSuppressedForegroundRows(
+  terminal: ForegroundTerminalOutputTarget,
+  options: ForegroundTerminalWriteOptions
+): void {
+  refreshVisibleRows(
+    terminal,
+    options.shouldRefreshViewportSynchronously?.() ?? true,
+    options.shouldReleaseRenderPause,
+    null
+  )
+  // A full-span repair owns every dirty row, so the next throttled repair starts a fresh window.
+  resetParsedDirtyRows(terminal)
+  if (consumeSuppressedFollowupRefresh(terminal)) {
+    scheduleViewportSettleRefresh(
+      terminal,
+      options.shouldRefreshViewportSynchronously,
+      options.shouldReleaseRenderPause
+    )
+  }
+}
+
 /** Repair the rows this parse dirtied plus cursor rows, and schedule the next-frame repaint when one is owed. */
 function settleForegroundRender(
   terminal: ForegroundTerminalOutputTarget,
@@ -294,20 +237,28 @@ export function writeForegroundTerminalChunk(
   const throttled = options.throttleForcedRefresh === true
   let forcedRefresh = options.forceViewportRefresh === true
   let followupViewportRefresh = options.followupViewportRefresh === true
+  let suppressedForcedRefresh = false
   if (forcedRefresh && throttled) {
-    forcedRefresh = takeForcedRefreshSlot(terminal, options)
+    forcedRefresh = takeForcedRefreshSlot(terminal)
     if (forcedRefresh) {
       // Why: this repair stands in for every suppressed batch, including the next-frame repaint they asked for.
       followupViewportRefresh =
         consumeSuppressedFollowupRefresh(terminal) || followupViewportRefresh
     } else {
-      noteSuppressedFollowupRefresh(terminal, options)
+      suppressedForcedRefresh = true
+      noteSuppressedRepair(terminal, options)
     }
   }
   const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
   if (beforeWriteViewport && !throttled) {
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
+  }
+  // Arm from the parse callback: a repair taken mid-parse misses rows that parse has not reached yet.
+  const armSuppressedRepairWhenParsed = (): void => {
+    if (noteSuppressedParseLanded(terminal)) {
+      armTrailingForcedRefresh(terminal, () => repairSuppressedForegroundRows(terminal, options))
+    }
   }
   // WriteBuffer callbacks must never throw (xterm-write-callback-guard.ts); guard settle/onParsed independently so renderer failure cannot strand replay guards.
   const runParsedSteps = (): void => {
@@ -322,6 +273,12 @@ export function writeForegroundTerminalChunk(
         )
       )
     }
+    if (suppressedForcedRefresh) {
+      runGuardedWriteCompletionStep(
+        'foreground-suppressed-parse-settled',
+        armSuppressedRepairWhenParsed
+      )
+    }
     if (options.onParsed) {
       runGuardedWriteCompletionStep('foreground-on-parsed', options.onParsed)
     }
@@ -330,6 +287,13 @@ export function writeForegroundTerminalChunk(
     terminal.write(data, runParsedSteps)
     return true
   } catch {
+    // A synchronous failure ends this batch without a callback, so its owed repair must not wait on one.
+    if (suppressedForcedRefresh) {
+      runGuardedWriteCompletionStep(
+        'foreground-suppressed-parse-settled',
+        armSuppressedRepairWhenParsed
+      )
+    }
     // Synchronous failure requires recovery but proves no parser liveness; keep it distinct from parse completion.
     if (options.onWriteFailure) {
       runGuardedWriteCompletionStep('foreground-on-write-failure', options.onWriteFailure)
@@ -340,7 +304,6 @@ export function writeForegroundTerminalChunk(
 
 export function discardForegroundRenderSettle(terminal: ForegroundTerminalOutputTarget): void {
   cancelScheduledViewportSettleRefresh(terminal)
-  cancelTrailingForcedRefresh(terminal)
-  suppressedFollowupRefreshByTerminal.delete(terminal)
+  discardForcedRefreshWindow(terminal)
   disposeParsedDirtyRows(terminal)
 }
