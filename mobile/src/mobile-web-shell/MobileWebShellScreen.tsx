@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { Linking, Pressable, Text, View } from 'react-native'
+import { useEffect, useState } from 'react'
+import { Linking, View } from 'react-native'
 import { useNavigation, useNavigationContainerRef, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
@@ -7,17 +7,12 @@ import {
   parseMobileWebShellLoadState
 } from '../../modules/orca-mobile-web-shell/src'
 import { HostRouteNoticeBanner } from '../components/HostRouteNoticeBanner'
-import { ProtocolBlockScreen } from '../components/ProtocolBlockScreen'
-import { colors, radii, spacing, typography } from '../theme/mobile-theme'
+import { colors } from '../theme/mobile-theme'
 import { themedStyleSheet } from '../theme/themed-styles'
 import { useMobileColorScheme } from '../theme/use-mobile-color-scheme'
 import type { BridgeInitRoute } from './bridge/bridge-envelope'
 import type { BridgeClearableRouteParam } from './bridge/bridge-route-update'
-import type {
-  MobileWebShellFailureCause,
-  MobileWebShellSessionState,
-  MobileWebShellUpdateNotice
-} from './mobile-web-shell-session-contract'
+import type { MobileWebShellUpdateNotice } from './mobile-web-shell-session-contract'
 import { useMobileWebShellDroppedFrames } from './mobile-web-shell-dev-facts'
 import { ShellDevFacts } from './ShellDevFacts'
 import { cancelledShellNavigationTarget } from './cancelled-navigation-target'
@@ -34,31 +29,15 @@ import { usePageHostSnapshot } from './use-page-host-snapshot'
 import { useReportedHostAreaServing } from './host-area-serving'
 import { isHostRouteOf } from './page-route-policy'
 import { nativeStackReturn } from './native-stack-return'
-import { PageRouteUnavailableScreen } from './PageRouteUnavailableScreen'
+import { usePageLocationOnFold } from './page-location-on-fold'
 import { useResponsiveLayout } from '../layout/responsive-layout'
 import { storageReadParamsSchema, type BridgeNativeVerb } from './bridge/bridge-native-verbs'
-import { SHELL_OPENING_LABEL, ShellPageCover, ShellWaitingFrame } from './ShellWaitingFrame'
-import { ShellDownloadProgress } from './ShellDownloadProgress'
+import { SHELL_OPENING_LABEL, ShellPageCover } from './ShellWaitingFrame'
 import { useReportedShellOverlayLoad, type ShellOverlayLoad } from './shell-overlay-load'
 import { pageSafeAreaInsets, usePublishedSafeAreaInsets } from './page-safe-area-insets'
+import { ShellStateScreen } from './ShellStateScreen'
 import { hostProfileUnreadableLine, pageFaultLine } from './shell-lifecycle-log'
 import { recordShellLifecycleLine } from './shell-lifecycle-line-recorder'
-
-function failureMessage(reason: MobileWebShellFailureCause): string {
-  switch (reason) {
-    case 'isolation-unavailable':
-      return "This device's WebView is too old to open the workspace safely."
-    case 'download-failed':
-      return 'The latest app could not be downloaded from this host.'
-    case 'status-unreadable':
-      return "Could not read this host's status. Go back and reopen it."
-    case 'render-process-gone':
-      return 'The workspace stopped responding.'
-    case 'generation-unreadable':
-    case 'document-load-failed':
-      return 'The downloaded app could not be opened.'
-  }
-}
 
 // Do not promise a retry: the shell schedules no second update attempt.
 function updateNoticeMessage(notice: MobileWebShellUpdateNotice): string {
@@ -66,47 +45,6 @@ function updateNoticeMessage(notice: MobileWebShellUpdateNotice): string {
     case 'update-failed':
       return "Couldn't download the latest app from this host. Showing the last version that worked."
   }
-}
-
-function Centered({ children }: { children: ReactNode }) {
-  useMobileColorScheme()
-  return <View style={styles.centered}>{children}</View>
-}
-
-function Waiting({ label }: { label: string }) {
-  return (
-    <Centered>
-      <ShellWaitingFrame label={label} />
-    </Centered>
-  )
-}
-
-function Failed({
-  state,
-  onRetry
-}: {
-  state: Extract<MobileWebShellSessionState, { kind: 'failed' }>
-  onRetry: () => void
-}) {
-  useMobileColorScheme()
-  // Retry cannot change a settled isolation gate or give an unsupported WebView the missing fence.
-  const retryable = state.reason !== 'isolation-unavailable' && state.reason !== 'status-unreadable'
-  return (
-    <Centered>
-      <Text style={styles.failedMessage} testID="mobile-web-shell-failed">
-        {failureMessage(state.reason)}
-      </Text>
-      {retryable ? (
-        <Pressable
-          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
-          testID="mobile-web-shell-retry"
-          onPress={onRetry}
-        >
-          <Text style={styles.retryLabel}>Try again</Text>
-        </Pressable>
-      ) : null}
-    </Centered>
-  )
 }
 
 export type MobileWebShellScreenProps = {
@@ -190,6 +128,38 @@ export function MobileWebShellScreen({
       console.warn('[web-shell] could not open a URL for the page', { url, error })
     })
   }
+  // Push so Back reveals the mounted page without downloading or handshaking again, unless the page replaced itself.
+  const openPageRoute = (href: string, replace = false) => {
+    if (overlay) {
+      return void router.replace(href)
+    }
+    // Return to an existing screen rather than pushing a duplicate over the live one.
+    const rootState = navigationContainer.getRootState()
+    const onStack = rootState ? nativeStackReturn(rootState, href) : null
+    if (onStack === 'current') {
+      return
+    }
+    if (onStack) {
+      navigation.dispatch({
+        type: 'POP',
+        payload: { count: onStack.count },
+        target: onStack.target,
+        source: onStack.source
+      })
+      return
+    }
+    // The wide host route owns the session area; dismissTo pops to it or replaces after a cold deep link, avoiding a second copy.
+    if (isWideLayout && isHostRouteOf(href, hostId)) {
+      router.dismissTo(href)
+      return
+    }
+    return void (replace ? router.replace(href) : router.push(href))
+  }
+  const holdPageLocation = usePageLocationOnFold(
+    isWideLayout,
+    () => navigation.isFocused(),
+    openPageRoute
+  )
 
   const bridge = useMobileWebShellBridge({
     hostId,
@@ -221,6 +191,7 @@ export function MobileWebShellScreen({
     // Keep the cover until the page reports its own first frame.
     onPagePainted: reportPagePainted,
     onPageBackClaim: reportPageBackClaim,
+    onPageLocation: (href) => holdPageLocation(href, ownsHostArea),
     onRouteParamClear: (param, value) => {
       onRouteParamClear?.(param, value)
     },
@@ -229,33 +200,7 @@ export function MobileWebShellScreen({
       console.warn('[web-shell] refused to open this screen', issue)
       reportShellFailure('document-load-failed')
     },
-    // Push so Back reveals the mounted page without downloading or handshaking again, unless the page replaced itself.
-    onNavigate: (href: string, replace: boolean) => {
-      if (overlay) {
-        return void router.replace(href)
-      }
-      // Return to an existing screen rather than pushing a duplicate over the live one.
-      const rootState = navigationContainer.getRootState()
-      const onStack = rootState ? nativeStackReturn(rootState, href) : null
-      if (onStack === 'current') {
-        return
-      }
-      if (onStack) {
-        navigation.dispatch({
-          type: 'POP',
-          payload: { count: onStack.count },
-          target: onStack.target,
-          source: onStack.source
-        })
-        return
-      }
-      // The wide host route owns the session area; dismissTo pops to it or replaces after a cold deep link, avoiding a second copy.
-      if (isWideLayout && isHostRouteOf(href, hostId)) {
-        router.dismissTo(href)
-        return
-      }
-      return void (replace ? router.replace(href) : router.push(href))
-    },
+    onNavigate: openPageRoute,
     serveNativeVerb,
     onExternalLink: openUrlForPage,
     // Reuse the app’s platform haptics mapping; device failures are already swallowed there.
@@ -281,6 +226,7 @@ export function MobileWebShellScreen({
   // Use navigation screen options to disable this stack entry’s gesture; the router has no such option.
   useShellPageBack({
     claimed: backClaimed,
+    isFocused: () => navigation.isFocused(),
     sendBack: bridge.sendBack,
     setOptions: navigation.setOptions
   })
@@ -302,37 +248,16 @@ export function MobileWebShellScreen({
   if (overlay && state.kind !== 'ready') {
     return null
   }
-  if (state.kind === 'route-unavailable') {
-    return <PageRouteUnavailableScreen hostId={hostId} />
-  }
-  if (state.kind === 'wall') {
-    return <ProtocolBlockScreen verdict={state.verdict} />
-  }
-  if (state.kind === 'failed') {
-    return <Failed state={state} onRetry={retry} />
-  }
-  if (state.kind === 'offline') {
-    return (
-      <Centered>
-        <Text style={styles.waitingLabel} testID="mobile-web-shell-offline">
-          Connect to this host to download the latest app
-        </Text>
-      </Centered>
-    )
-  }
-  if (state.kind === 'fetching') {
-    return (
-      <Centered>
-        <ShellDownloadProgress
-          state={state}
-          feed={downloadProgress}
-          host={snapshot?.host ?? null}
-        />
-      </Centered>
-    )
-  }
   if (state.kind !== 'ready') {
-    return <Waiting label={state.kind === 'activating' ? SHELL_OPENING_LABEL : 'Checking host'} />
+    return (
+      <ShellStateScreen
+        hostId={hostId}
+        state={state}
+        onRetry={retry}
+        downloadProgress={downloadProgress}
+        host={snapshot?.host ?? null}
+      />
+    )
   }
   return (
     <View
@@ -404,38 +329,5 @@ const styles = themedStyleSheet(() => ({
   },
   unpaintedOverlay: {
     opacity: 0
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bgBase,
-    paddingHorizontal: spacing.lg
-  },
-  waitingLabel: {
-    fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    marginTop: spacing.md,
-    textAlign: 'center'
-  },
-  failedMessage: {
-    fontSize: typography.bodySize,
-    color: colors.textPrimary,
-    textAlign: 'center',
-    marginBottom: spacing.lg
-  },
-  retryButton: {
-    backgroundColor: colors.bgRaised,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radii.button
-  },
-  retryLabel: {
-    fontSize: typography.bodySize,
-    fontWeight: '600',
-    color: colors.textPrimary
-  },
-  pressed: {
-    opacity: 0.7
   }
 }))

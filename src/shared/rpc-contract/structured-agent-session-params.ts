@@ -30,6 +30,7 @@ export {
 } from './structured-agent-session-message-params'
 
 export {
+  ContinuationContextParams,
   Identifier,
   JournalCursor,
   MAX_ID_LENGTH,

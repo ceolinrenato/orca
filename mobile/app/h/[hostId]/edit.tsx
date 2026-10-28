@@ -21,8 +21,18 @@ import { resolveHostEndpointEdit } from '../../../src/transport/host-endpoint-ed
 import { usePrimeHosts, useRefreshHostClient } from '../../../src/transport/host-client-hooks'
 import type { HostProfile } from '../../../src/transport/types'
 import { hostOs } from '../../../src/platform/host-os'
+import { SideSafeArea } from '../../../src/layout/side-safe-area'
 
-export default function EditHostScreen() {
+// The host group leaves the Duo's status-bar rail to its pages; this native screen pads it.
+export default function EditHostRoute() {
+  return (
+    <SideSafeArea>
+      <EditHostScreen />
+    </SideSafeArea>
+  )
+}
+
+function EditHostScreen() {
   useMobileColorScheme()
   const router = useRouter()
   const insets = useSafeAreaInsets()

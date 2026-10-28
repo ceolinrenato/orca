@@ -38,6 +38,10 @@ export type AtRestCommandSource = {
     signal: AbortSignal,
     admitted: () => void
   ) => Promise<AtRestCommandScan>
+  scanTimeoutMs?: number
+  maxFailedScans?: number | null
+  evictUnreadMs?: number | null
+  missingWorkspaceIsFailure?: boolean
   resolveWorkspacePath: (workspaceId: string) => Promise<string>
   /** The account a start uses now, read at scan time; absent scans the chat's saved account. */
   resolveAccountHome?: () => Promise<AgentSessionAccountHome>
@@ -169,12 +173,13 @@ export class AtRestCommandCatalog implements StructuredAgentSessionAtRestCommand
   }
 
   private evictUnread(now: number): void {
-    if (now < this.nextEviction) {
+    const age = this.source.evictUnreadMs
+    if (age === null || now < this.nextEviction) {
       return
     }
     this.nextEviction = now + AT_REST_COMMANDS_TTL_MS
     for (const [key, entry] of this.entries) {
-      if (!entry.scanning && now - entry.lastReadAt >= EVICT_UNREAD_MS) {
+      if (!entry.scanning && now - entry.lastReadAt >= (age ?? EVICT_UNREAD_MS)) {
         this.entries.delete(key)
       }
     }
@@ -187,7 +192,7 @@ export class AtRestCommandCatalog implements StructuredAgentSessionAtRestCommand
     const isCurrent = (): boolean => owns() && !attempt.signal.aborted
     const timer = setTimeout(
       () => attempt.abort(new Error('Command discovery timed out')),
-      AT_REST_COMMANDS_TTL_MS
+      this.source.scanTimeoutMs ?? AT_REST_COMMANDS_TTL_MS
     )
     let admittedAt: number | undefined
     const admitted = (): void => {
@@ -211,9 +216,15 @@ export class AtRestCommandCatalog implements StructuredAgentSessionAtRestCommand
         (await wait(Promise.resolve(this.source.resolveAccountHome?.()))) ?? record.accountHome
       const chat = { ...record, accountHome }
       attempt.signal.throwIfAborted()
-      const answer = directory?.isDirectory()
-        ? await this.source.scan(chat, cwd, isCurrent, entry.generation, attempt.signal, admitted)
-        : { commands: undefined, fromAgent: false }
+      if (!directory?.isDirectory()) {
+        if (this.source.missingWorkspaceIsFailure) {
+          throw new Error('Command discovery workspace unavailable')
+        }
+        return { commands: undefined, fromAgent: false }
+      }
+      const answer = await wait(
+        this.source.scan(chat, cwd, isCurrent, entry.generation, attempt.signal, admitted)
+      )
       attempt.signal.throwIfAborted()
       return answer
     })()
@@ -242,8 +253,9 @@ export class AtRestCommandCatalog implements StructuredAgentSessionAtRestCommand
             return
           }
           entry.failures += 1
+          const limit = this.source.maxFailedScans
           entry.scannedAt =
-            entry.failures < MAX_FAILED_SCANS
+            limit === null || entry.failures < (limit ?? MAX_FAILED_SCANS)
               ? this.now() - AT_REST_COMMANDS_TTL_MS + FAILED_SCAN_RETRY_MS
               : this.now()
           console.warn(`[${this.source.label}] reading the at-rest \`/\` commands failed:`, error)

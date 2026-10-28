@@ -14,6 +14,7 @@ import {
 } from './bridge-haptics-notify'
 import { captureBridgeError } from './bridge-error-capture'
 import { BRIDGE_BACK_CLAIM_NOTIFY } from './bridge-page-back'
+import { BRIDGE_PAGE_LOCATION } from './bridge-page-location'
 import { BRIDGE_PAGE_PAINTED } from './bridge-page-painted'
 
 // Ungated calls before init expose mount-order bugs; calls after close stay inert for teardown compatibility. Gated calls return false when no session/grant exists.
@@ -39,6 +40,7 @@ export type BridgeClientNotifications = {
   notifyPageFault: (error: unknown) => boolean
   notifyPagePainted: () => void
   notifyBackClaim: (claimed: boolean) => void
+  notifyPageLocation: (href: string) => void
 }
 
 export function createBridgeClientNotifications(
@@ -123,6 +125,9 @@ export function createBridgeClientNotifications(
     },
     notifyBackClaim: (claimed) => {
       post({ v: BRIDGE_PROTOCOL_VERSION, type: 'notify', name: BRIDGE_BACK_CLAIM_NOTIFY, claimed })
+    },
+    notifyPageLocation: (href) => {
+      post({ v: BRIDGE_PROTOCOL_VERSION, type: 'notify', name: BRIDGE_PAGE_LOCATION, href })
     }
   }
 }

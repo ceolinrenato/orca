@@ -77,6 +77,7 @@ export type MobileWebShellBridgeArgs = {
   onPagePainted: () => void
   // Document resets explicitly publish false so retired pages cannot retain Back.
   onPageBackClaim: (claimed: boolean) => void
+  onPageLocation: (href: string) => void
   onRouteParamClear: (param: BridgeClearableRouteParam, value: string) => void
   onRouteRefused: (issue: string) => void
   onBinaryFramesDropped: (total: number) => void
@@ -156,7 +157,8 @@ export function useMobileWebShellBridge(args: MobileWebShellBridgeArgs): MobileW
       onBinaryFramesDropped: (total) => argsRef.current.onBinaryFramesDropped(total),
       onPageReady: () => argsRef.current.onPageReady(),
       onPagePainted: () => argsRef.current.onPagePainted(),
-      onPageBackClaim: (claimed) => argsRef.current.onPageBackClaim(claimed)
+      onPageBackClaim: (claimed) => argsRef.current.onPageBackClaim(claimed),
+      onPageLocation: (href) => argsRef.current.onPageLocation(href)
     })
     hostRef.current = { sessionId, host }
     // Reset host-owned drop totals on rebuild so a new lower count cannot look like frames being recovered.

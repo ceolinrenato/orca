@@ -281,6 +281,8 @@ describe("a Claude chat whose Claude isn't running lists Claude's own `/` comman
     const emptyDiscovery = { skills: [], sources: [], scannedAt: 0 }
     const claude = new ClaudeAtRestCommandCatalog({
       resolveWorkspacePath: async () => workspace,
+      resolveAccountHome: () =>
+        block('account', { variable: 'CLAUDE_CONFIG_DIR' as const, path: account }),
       probe,
       discover: async (args) =>
         waitForPromiseWithSignal(block('fallback', emptyDiscovery), args.signal)
@@ -306,6 +308,7 @@ describe("a Claude chat whose Claude isn't running lists Claude's own `/` comman
         'codex/workspace',
         'codex/environment',
         'codex/arguments',
+        'claude/account',
         'claude/environment',
         'claude/fallback',
         'claude/close'
@@ -343,7 +346,7 @@ describe("a Claude chat whose Claude isn't running lists Claude's own `/` comman
         expect(await catalog.settled(chat, 1_000)).toBeDefined()
         expect(asked).toHaveLength(before + 1)
       }
-      expect(warned).toHaveBeenCalledTimes(10)
+      expect(warned).toHaveBeenCalledTimes(11)
     } finally {
       fallback.resolve()
       codex.dispose()

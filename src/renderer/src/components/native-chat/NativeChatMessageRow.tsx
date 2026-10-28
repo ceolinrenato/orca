@@ -12,7 +12,7 @@ import { NativeChatReasoningRow } from './NativeChatReasoningRow'
 import { NativeChatNoticeRow } from './NativeChatNoticeRow'
 import { nativeChatNoticeBlock } from '../../../../shared/native-chat/native-chat-notice'
 import { nativeChatStoppedBeforeStartLabel } from './native-chat-stopped-before-start-row'
-import { nativeChatBlocksInOwnWords } from '../../../../shared/native-chat-stopped-before-start'
+import { nativeChatBlocksInOwnWords } from '../../../../shared/native-chat/native-chat-stopped-before-start'
 import { ProviderFrameRow } from './NativeChatTranscriptChrome'
 import type { NativeChatDiffReveal } from './native-chat-turn-diffs'
 import type {

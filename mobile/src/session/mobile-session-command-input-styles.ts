@@ -131,6 +131,35 @@ export const mobileSessionCommandInputStyles = themedStyleSheet(() => ({
     borderRadius: radii.button,
     minWidth: 36
   },
+  // The Duo side rail column: full-width keys with room for a thumb.
+  accessoryRail: {
+    flex: 1,
+    minHeight: 0
+  },
+  accessoryScrollVertical: {
+    flex: 1
+  },
+  // Keys span the 84pt rail less 4pt each side, so the widest label (Shift+Tab) fits.
+  accessoryContentVertical: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xs,
+    gap: spacing.sm
+  },
+  accessoryKeyVertical: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+    borderRadius: radii.composerItem
+  },
+  keyboardDismissKeyVertical: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: spacing.xs,
+    marginBottom: spacing.sm,
+    minHeight: 44,
+    backgroundColor: colors.bgRaised,
+    borderRadius: radii.composerItem
+  },
   keyboardDismissGlyph: {
     alignItems: 'center',
     height: 18,

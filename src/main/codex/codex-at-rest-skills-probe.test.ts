@@ -213,7 +213,14 @@ describe('a resting Codex chat lists the skills Codex would load', () => {
       expect(h.calls).toHaveLength(1)
       expect(h.request).toHaveBeenCalledTimes(count / 8)
       expect(visits.mock.calls.length).toBeLessThan(8 * count)
-      expect(removed.mock.calls.length).toBeLessThan(20 * count)
+      // Pool requests and removable answer waiters each have a linear work budget.
+      const values = removed.mock.calls.map(([value]) => value)
+      expect(
+        values.filter((value) => value && typeof value === 'object' && 'cwd' in value)
+      ).toHaveLength(4 * count)
+      expect(
+        values.filter((value) => value && typeof value === 'object' && 'ready' in value)
+      ).toHaveLength(16 * count)
       removed.mockRestore()
       expect(chats.map(h.catalog.read).every(Boolean)).toBe(true)
       h.catalog.retireContext()

@@ -100,6 +100,62 @@ function views(fields: Partial<SessionTabsView> = {}): SessionTabsView {
 const noFacts: SessionTabsFacts = { tabLabels: {}, terminalRows: {}, browserTabs: {} }
 
 describe('projectSessionTabs', () => {
+  it.each(['check-details', 'conflict-review'] as const)(
+    'withholds %s views from file rows and group references',
+    (mode) => {
+      const { model, results } = build(testContext(), [
+        {
+          type: 'openEditorTab',
+          workspace: WS,
+          fileId: `${WS}::${mode}::check-run:42`,
+          contentType: mode,
+          view: {
+            view: { mode },
+            file: {
+              filePath: `${WS}::${mode}::check-run:42`,
+              relativePath: 'e2e / changed e2e specs (1/1)',
+              language: 'plaintext'
+            }
+          }
+        },
+        {
+          type: 'openEditorTab',
+          workspace: WS,
+          fileId: '/Users/dev/orca/app.ts',
+          contentType: 'editor',
+          file: {
+            filePath: '/Users/dev/orca/app.ts',
+            relativePath: 'app.ts',
+            language: 'typescript'
+          }
+        }
+      ])
+      const virtualTabId = results[0]!.tabId!
+      const fileTabId = results[1]!.tabId!
+      const groupId = groupOf(model, virtualTabId)
+      const view = views({
+        activeGroupIdByWorktree: { [WS]: groupId },
+        groups: {
+          [WS]: {
+            [groupId]: { activeTabId: virtualTabId, recentTabIds: [fileTabId, virtualTabId] }
+          }
+        }
+      })
+
+      const snapshot = projectSessionTabs(WS, model.workspaces[WS]!, view, noFacts, false)
+
+      expect(snapshot.tabs).toMatchObject([
+        { id: fileTabId, type: 'file', relativePath: 'app.ts', isActive: false }
+      ])
+      expect(snapshot.tabs).toHaveLength(1)
+      expect(snapshot.activeTabId).toBeNull()
+      expect(snapshot.activeTabType).toBeNull()
+      expect(snapshot.tabGroups).toEqual([
+        { id: groupId, activeTabId: null, tabOrder: [fileTabId], recentTabIds: [fileTabId] }
+      ])
+    }
+  )
+
   it("projects the model into today's snapshot rows, groups and selection", () => {
     const { model, api, apiSplit, agent, readme, browser, chat, left, right } = workspace()
     const apiTab = api!.tabId!

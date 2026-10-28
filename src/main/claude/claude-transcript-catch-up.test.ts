@@ -407,10 +407,23 @@ describe('Claude chat catch-up', () => {
     const c = await chat('-old-work', '/new-work')
     await c.write([...chatTurn, ...outsideTurn])
     const lookup = Promise.withResolvers<string | null>()
+    const lookupStarted = Promise.withResolvers<void>()
     const resolve = vi
       .spyOn(sessionFileResolver, 'resolveSessionFilePath')
-      .mockReturnValueOnce(lookup.promise)
-    expect(await c.open('a1', { timeoutMs: 5 })).toBe(false)
+      .mockImplementationOnce(() => {
+        lookupStarted.resolve()
+        return lookup.promise
+      })
+    // Fire the deadline only once the lookup is in flight; a real 5 ms timer raced slow runners.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const opened = c.open('a1', { timeoutMs: 5 })
+      await lookupStarted.promise
+      vi.advanceTimersByTime(5)
+      expect(await opened).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
     expect(resolve.mock.calls[0]?.[3]?.aborted).toBe(true)
     lookup.resolve(null)
     await new Promise<void>((done) => setImmediate(done))

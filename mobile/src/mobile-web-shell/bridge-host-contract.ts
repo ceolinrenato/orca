@@ -93,6 +93,8 @@ export type BridgeHostOptions = {
   onPagePainted: () => void
   // Required for native interception: only a live claim owns Back. Document-ending paths publish false so callers need not infer staleness.
   onPageBackClaim: (claimed: boolean) => void
+  // Where a host-area page navigated inside its own document; the native route never moves for those hops.
+  onPageLocation: (href: string) => void
   // Clear a consumed one-shot param only if its value still matches; a newer tap may already have replaced it (ruling 34).
   onRouteParamClear: (param: BridgeClearableRouteParam, value: string) => void
   // Escalate invalid shell routes visibly; a page-only console warning would leave a blank document retrying forever.
