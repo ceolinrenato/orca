@@ -249,4 +249,58 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
       vi.useRealTimers()
     }
   })
+
+  it('keeps a suppressed repair owed after a slot claim cancels its timer, so replay cannot drop its rows', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+      const spans: Record<string, { start: number; end: number }> = {
+        prime: { start: 0, end: 1 },
+        a: { start: 1, end: 2 },
+        b: { start: 21, end: 22 },
+        c: { start: 5, end: 6 },
+        replay: { start: 3, end: 4 }
+      }
+      let emit: ((span: { start: number; end: number } | undefined) => void) | null = null
+      ;(terminal._core as unknown as { _inputHandler?: unknown })._inputHandler = {
+        onRequestRefreshRows: (
+          listener: (event: { start: number; end: number } | undefined) => void
+        ) => {
+          emit = listener
+          return { dispose: () => {} }
+        }
+      }
+      const deferred = new Set(['c'])
+      const pending: (() => void)[] = []
+      terminal.write = (data: string, callback?: () => void) => {
+        emit?.(spans[data])
+        if (deferred.has(data)) {
+          if (callback) {
+            pending.push(callback)
+          }
+          return
+        }
+        callback?.()
+      }
+
+      writeForegroundTerminalChunk(terminal, 'prime', { forceViewportRefresh: true })
+      writeForegroundTerminalChunk(terminal, 'a', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS - 10)
+      writeForegroundTerminalChunk(terminal, 'b', throttled)
+      vi.advanceTimersByTime(15)
+      // 'c' claims the slot and cancels b's trailing timer before its own parse callback runs.
+      writeForegroundTerminalChunk(terminal, 'c', throttled)
+
+      // A replay write must not reset the tracker away while b's rows are still owed a repair.
+      writeForegroundTerminalChunk(terminal, 'replay', {
+        forceViewportRefresh: true,
+        followupViewportRefresh: true
+      })
+      const lastCall = terminal._core.refresh.mock.calls.at(-1)
+      expect(lastCall).toBeDefined()
+      expect(lastCall?.[1]).toBeGreaterThanOrEqual(22)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

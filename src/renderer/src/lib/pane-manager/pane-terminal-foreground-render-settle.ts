@@ -4,6 +4,8 @@ import {
   cancelTrailingForcedRefreshWhenIdle,
   consumeSuppressedFollowupRefresh,
   discardForcedRefreshWindow,
+  hasPendingSuppressedRepair,
+  markSuppressedRepairCovered,
   noteSuppressedParseLanded,
   noteSuppressedRepair,
   takeForcedRefreshSlot
@@ -192,6 +194,8 @@ function repairSuppressedForegroundRows(
   )
   // A full-span repair owns every dirty row, so the next throttled repair starts a fresh window.
   resetParsedDirtyRows(terminal)
+  // The suppressed batch's rows are now covered, so a later replay may reset the tracker again.
+  markSuppressedRepairCovered(terminal)
   if (consumeSuppressedFollowupRefresh(terminal)) {
     scheduleViewportSettleRefresh(
       terminal,
@@ -214,9 +218,10 @@ function settleForegroundRender(
   if (spanSinceLastRepair) {
     // Why: a throttled repair owns every row dirtied since the previous one, so its window restarts after the read.
     resetParsedDirtyRows(terminal)
-    // This repair covers every row dirtied so far; a trailing repair armed meanwhile would only duplicate it.
-    cancelTrailingForcedRefreshWhenIdle(terminal)
   }
+  // The read covered every row dirtied so far: settle any owed suppressed repair and drop its now-redundant trailing repair.
+  markSuppressedRepairCovered(terminal)
+  cancelTrailingForcedRefreshWhenIdle(terminal)
   refreshVisibleRows(
     terminal,
     options.shouldRefreshViewportSynchronously?.() ?? true,
@@ -258,7 +263,8 @@ export function writeForegroundTerminalChunk(
     }
   }
   const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
-  if (beforeWriteViewport && !throttled) {
+  // Replay must not reset away rows an owed suppressed repair still has to cover; the wider span is repainted instead.
+  if (beforeWriteViewport && !throttled && !hasPendingSuppressedRepair(terminal)) {
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
   }
