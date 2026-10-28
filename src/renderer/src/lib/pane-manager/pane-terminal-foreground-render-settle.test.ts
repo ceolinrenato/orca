@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { writeForegroundTerminalChunk } from './pane-terminal-foreground-render-settle'
+import {
+  FORCED_REFRESH_MIN_MS,
+  writeForegroundTerminalChunk
+} from './pane-terminal-foreground-render-settle'
 
 type RefreshFn = (start: number, end: number, sync?: boolean) => void
 
@@ -115,6 +118,48 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
       writeForegroundTerminalChunk(terminal, 'a', { forceViewportRefresh: true })
       writeForegroundTerminalChunk(terminal, 'b', { forceViewportRefresh: true })
       expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('covers the rows a suppressed batch dirtied before the window reopens', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+      const spans: Record<string, { start: number; end: number }> = {
+        prime: { start: 0, end: 1 },
+        a: { start: 1, end: 2 },
+        b: { start: 21, end: 22 },
+        c: { start: 3, end: 4 }
+      }
+      let emit: ((span: { start: number; end: number } | undefined) => void) | null = null
+      ;(terminal._core as unknown as { _inputHandler?: unknown })._inputHandler = {
+        onRequestRefreshRows: (
+          listener: (event: { start: number; end: number } | undefined) => void
+        ) => {
+          emit = listener
+          return { dispose: () => {} }
+        }
+      }
+      terminal.write = (data: string, callback?: () => void) => {
+        emit?.(spans[data])
+        callback?.()
+      }
+
+      // Prime the parse-span tracker through a non-throttled repair so later spans are observable.
+      writeForegroundTerminalChunk(terminal, 'prime', { forceViewportRefresh: true })
+      writeForegroundTerminalChunk(terminal, 'a', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS - 10)
+      writeForegroundTerminalChunk(terminal, 'b', throttled)
+      vi.advanceTimersByTime(15)
+      writeForegroundTerminalChunk(terminal, 'c', throttled)
+      vi.runOnlyPendingTimers()
+
+      // Either the reopened window absorbed b's rows or the still-pending trailing repair covered them.
+      const lastCall = terminal._core.refresh.mock.calls.at(-1)
+      expect(lastCall).toBeDefined()
+      expect(lastCall?.[1]).toBeGreaterThanOrEqual(22)
     } finally {
       vi.useRealTimers()
     }

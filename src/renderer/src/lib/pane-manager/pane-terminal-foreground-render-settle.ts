@@ -74,6 +74,8 @@ function scheduleTrailingForcedRefresh(
       options.shouldReleaseRenderPause,
       null
     )
+    // A full-span repair owns every dirty row, so the next throttled repair starts a fresh window.
+    resetParsedDirtyRows(terminal)
   }, FORCED_REFRESH_MIN_MS)
   timer.unref?.()
   trailingForcedRefreshByTerminal.set(terminal, timer)
@@ -224,14 +226,20 @@ function scheduleViewportSettleRefresh(
 function settleForegroundRender(
   terminal: ForegroundTerminalOutputTarget,
   beforeWriteViewport: ViewportSnapshot,
-  options: ForegroundTerminalWriteOptions
+  options: ForegroundTerminalWriteOptions,
+  spanSinceLastRepair: boolean
 ): void {
   const afterWriteViewport = captureViewportSnapshot(terminal)
+  const span = repairRowSpan(terminal, beforeWriteViewport, afterWriteViewport)
+  if (spanSinceLastRepair) {
+    // Why: a throttled repair owns every row dirtied since the previous one, so its window restarts after the read.
+    resetParsedDirtyRows(terminal)
+  }
   refreshVisibleRows(
     terminal,
     options.shouldRefreshViewportSynchronously?.() ?? true,
     options.shouldReleaseRenderPause,
-    repairRowSpan(terminal, beforeWriteViewport, afterWriteViewport)
+    span
   )
   // Chromium can paint scrolled top rows after parsing completes; repaint next frame to avoid stale rows until window movement.
   if (
@@ -251,12 +259,13 @@ export function writeForegroundTerminalChunk(
   data: string,
   options: ForegroundTerminalWriteOptions = {}
 ): boolean {
+  const throttled = options.throttleForcedRefresh === true
   let forcedRefresh = options.forceViewportRefresh === true
-  if (forcedRefresh && options.throttleForcedRefresh === true) {
+  if (forcedRefresh && throttled) {
     forcedRefresh = takeForcedRefreshSlot(terminal, options)
   }
   const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
-  if (beforeWriteViewport) {
+  if (beforeWriteViewport && !throttled) {
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
   }
@@ -264,7 +273,7 @@ export function writeForegroundTerminalChunk(
   const runParsedSteps = (): void => {
     if (beforeWriteViewport) {
       runGuardedWriteCompletionStep('foreground-render-settle', () =>
-        settleForegroundRender(terminal, beforeWriteViewport, options)
+        settleForegroundRender(terminal, beforeWriteViewport, options, throttled)
       )
     }
     if (options.onParsed) {
