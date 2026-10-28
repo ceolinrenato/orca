@@ -43,6 +43,23 @@ const trailingForcedRefreshByTerminal = new WeakMap<
   ForegroundTerminalOutputTarget,
   ReturnType<typeof setTimeout>
 >()
+// Why: a suppressed repair still owes its next-frame repaint, so the repair that lands has to honor it.
+const suppressedFollowupRefreshByTerminal = new WeakMap<ForegroundTerminalOutputTarget, boolean>()
+
+function noteSuppressedFollowupRefresh(
+  terminal: ForegroundTerminalOutputTarget,
+  options: ForegroundTerminalWriteOptions
+): void {
+  if (options.followupViewportRefresh === true) {
+    suppressedFollowupRefreshByTerminal.set(terminal, true)
+  }
+}
+
+function consumeSuppressedFollowupRefresh(terminal: ForegroundTerminalOutputTarget): boolean {
+  const pending = suppressedFollowupRefreshByTerminal.get(terminal) === true
+  suppressedFollowupRefreshByTerminal.delete(terminal)
+  return pending
+}
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -76,6 +93,14 @@ function scheduleTrailingForcedRefresh(
     )
     // A full-span repair owns every dirty row, so the next throttled repair starts a fresh window.
     resetParsedDirtyRows(terminal)
+    if (consumeSuppressedFollowupRefresh(terminal)) {
+      // Why: batches suppressed since the last repair asked for a next-frame repaint; this is the repair that owes it.
+      scheduleViewportSettleRefresh(
+        terminal,
+        options.shouldRefreshViewportSynchronously,
+        options.shouldReleaseRenderPause
+      )
+    }
   }, FORCED_REFRESH_MIN_MS)
   timer.unref?.()
   trailingForcedRefreshByTerminal.set(terminal, timer)
@@ -227,7 +252,8 @@ function settleForegroundRender(
   terminal: ForegroundTerminalOutputTarget,
   beforeWriteViewport: ViewportSnapshot,
   options: ForegroundTerminalWriteOptions,
-  spanSinceLastRepair: boolean
+  spanSinceLastRepair: boolean,
+  followupViewportRefresh: boolean
 ): void {
   const afterWriteViewport = captureViewportSnapshot(terminal)
   const span = repairRowSpan(terminal, beforeWriteViewport, afterWriteViewport)
@@ -243,7 +269,7 @@ function settleForegroundRender(
   )
   // Chromium can paint scrolled top rows after parsing completes; repaint next frame to avoid stale rows until window movement.
   if (
-    options.followupViewportRefresh ||
+    followupViewportRefresh ||
     viewportChangedDuringWrite(beforeWriteViewport, afterWriteViewport)
   ) {
     scheduleViewportSettleRefresh(
@@ -261,8 +287,16 @@ export function writeForegroundTerminalChunk(
 ): boolean {
   const throttled = options.throttleForcedRefresh === true
   let forcedRefresh = options.forceViewportRefresh === true
+  let followupViewportRefresh = options.followupViewportRefresh === true
   if (forcedRefresh && throttled) {
     forcedRefresh = takeForcedRefreshSlot(terminal, options)
+    if (forcedRefresh) {
+      // Why: this repair stands in for every suppressed batch, including the next-frame repaint they asked for.
+      followupViewportRefresh =
+        consumeSuppressedFollowupRefresh(terminal) || followupViewportRefresh
+    } else {
+      noteSuppressedFollowupRefresh(terminal, options)
+    }
   }
   const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
   if (beforeWriteViewport && !throttled) {
@@ -273,7 +307,13 @@ export function writeForegroundTerminalChunk(
   const runParsedSteps = (): void => {
     if (beforeWriteViewport) {
       runGuardedWriteCompletionStep('foreground-render-settle', () =>
-        settleForegroundRender(terminal, beforeWriteViewport, options, throttled)
+        settleForegroundRender(
+          terminal,
+          beforeWriteViewport,
+          options,
+          throttled,
+          followupViewportRefresh
+        )
       )
     }
     if (options.onParsed) {
@@ -295,5 +335,6 @@ export function writeForegroundTerminalChunk(
 export function discardForegroundRenderSettle(terminal: ForegroundTerminalOutputTarget): void {
   cancelScheduledViewportSettleRefresh(terminal)
   cancelTrailingForcedRefresh(terminal)
+  suppressedFollowupRefreshByTerminal.delete(terminal)
   disposeParsedDirtyRows(terminal)
 }

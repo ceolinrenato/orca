@@ -164,4 +164,30 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
       vi.useRealTimers()
     }
   })
+
+  it('carries a suppressed batch next-frame follow-up into the repair that lands', () => {
+    vi.useFakeTimers()
+    // Deterministic: take scheduleViewportSettleRefresh's timeout path instead of a real rAF.
+    vi.stubGlobal('requestAnimationFrame', undefined)
+    try {
+      const { terminal } = createTerminal(false)
+
+      writeForegroundTerminalChunk(terminal, 'a', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS - 10)
+      writeForegroundTerminalChunk(terminal, 'b', {
+        ...throttled,
+        followupViewportRefresh: true
+      })
+      vi.advanceTimersByTime(15)
+      writeForegroundTerminalChunk(terminal, 'c', throttled)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+
+      vi.advanceTimersByTime(20)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(3)
+      expect(terminal._core.refresh).toHaveBeenLastCalledWith(0, terminal.rows - 1, true)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
 })
