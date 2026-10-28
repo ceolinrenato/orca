@@ -4,7 +4,6 @@ import { writeTerminalOutput } from '@/lib/pane-manager/pane-terminal-output-sch
 import { forceFullViewportPresent } from '@/lib/pane-manager/terminal-render-pause-release'
 
 import { FOREGROUND_SYNCHRONIZED_FRAME_INTERACTIVE_WINDOW_MS } from './foreground-output-budgets'
-import { resolveForegroundForcedRefresh } from './foreground-forced-refresh'
 import {
   shouldWritePtyOutputForeground,
   scanSynchronizedForegroundOutput,
@@ -67,13 +66,7 @@ export function bindWritePtyOutputToXterm(session: ConnectPanePtySession): void 
     const renderRefreshDecision = foregroundOutput
       ? session.shouldForceForegroundRenderRefresh(data)
       : { refresh: false, inPlaceRewrite: false }
-    const forcedRefresh = resolveForegroundForcedRefresh(
-      renderRefreshDecision,
-      session.lastForcedForegroundRefreshAt,
-      performance.now()
-    )
-    session.lastForcedForegroundRefreshAt = forcedRefresh.lastForcedAt
-    const foregroundRenderRefreshNeeded = forcedRefresh.decision.refresh
+    const foregroundRenderRefreshNeeded = renderRefreshDecision.refresh
     // Why: Claude Code's in-place prompt redraws on Windows ConPTY can paint one frame late; a follow-up repaint fixes the column desync without a resize.
     const nativeWindowsInPlaceRewriteFollowup = nativeWindowsRewriteNeedsFollowupRenderRefresh({
       isNativeWindowsConpty: session.shouldApplyNativeWindowsRewriteRefresh,

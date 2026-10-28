@@ -68,3 +68,55 @@ describe('writeForegroundTerminalChunk render-pause ownership', () => {
     expect(renderService._needsFullRefresh).toBe(true)
   })
 })
+
+describe('writeForegroundTerminalChunk forced refresh throttle', () => {
+  const throttled = { forceViewportRefresh: true, throttleForcedRefresh: true }
+
+  it('issues one repair inside the window and a trailing repair for the suppressed batches', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+
+      writeForegroundTerminalChunk(terminal, 'first batch', throttled)
+      writeForegroundTerminalChunk(terminal, 'second batch', throttled)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(1)
+
+      vi.runOnlyPendingTimers()
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+      // The trailing repair must cover every row dirtied since, not just the last write's span.
+      expect(terminal._core.refresh).toHaveBeenLastCalledWith(0, terminal.rows - 1, true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('issues one trailing repair however many batches were suppressed', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+
+      for (let index = 0; index < 5; index += 1) {
+        writeForegroundTerminalChunk(terminal, `batch ${index}`, throttled)
+      }
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(1)
+
+      vi.runOnlyPendingTimers()
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves replay repairs unthrottled when the writer does not opt in', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+
+      writeForegroundTerminalChunk(terminal, 'a', { forceViewportRefresh: true })
+      writeForegroundTerminalChunk(terminal, 'b', { forceViewportRefresh: true })
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

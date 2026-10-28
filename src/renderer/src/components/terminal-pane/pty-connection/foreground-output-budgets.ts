@@ -8,8 +8,6 @@ export const FOREGROUND_IMMEDIATE_BUDGET_CHARS = 128 * 1024
 export const FOREGROUND_BUDGET_WINDOW_MS = 500
 export const INACTIVE_FOREGROUND_IMMEDIATE_BUDGET_CHARS = 32 * 1024
 export const FOREGROUND_GRID_DRIFT_CHECK_MIN_MS = 250
-// Why: a forced foreground repaint doubles the DOM renderer's work on top of its own dirty-row repaint, so sustained output must not force one per frame.
-export const FOREGROUND_FORCED_REFRESH_MIN_MS = 100
 
 export type ForegroundImmediateBudget = { chars: number; windowStart: number }
 

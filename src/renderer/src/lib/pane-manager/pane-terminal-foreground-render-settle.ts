@@ -26,11 +26,71 @@ export type ForegroundTerminalOutputTarget = {
 
 type ForegroundTerminalWriteOptions = {
   forceViewportRefresh?: boolean
+  // Why opt-in: replay/snapshot repairs must not be throttled; only the live output writers pass this.
+  throttleForcedRefresh?: boolean
   followupViewportRefresh?: boolean
   shouldRefreshViewportSynchronously?: () => boolean
   shouldReleaseRenderPause?: () => boolean
   onParsed?: () => void
   onWriteFailure?: () => void
+}
+
+// Why here: the forced repaint is bounded where it actually runs, so queued batches drained back-to-back cannot each issue one.
+export const FORCED_REFRESH_MIN_MS = 100
+
+const lastForcedRefreshAtByTerminal = new WeakMap<ForegroundTerminalOutputTarget, number>()
+const trailingForcedRefreshByTerminal = new WeakMap<
+  ForegroundTerminalOutputTarget,
+  ReturnType<typeof setTimeout>
+>()
+
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+function cancelTrailingForcedRefresh(terminal: ForegroundTerminalOutputTarget): void {
+  const timer = trailingForcedRefreshByTerminal.get(terminal)
+  if (timer === undefined) {
+    return
+  }
+  clearTimeout(timer)
+  trailingForcedRefreshByTerminal.delete(terminal)
+}
+
+/** A suppressed repair must still land: repair every row dirtied since the last one, not just the last write's span. */
+function scheduleTrailingForcedRefresh(
+  terminal: ForegroundTerminalOutputTarget,
+  options: ForegroundTerminalWriteOptions
+): void {
+  if (trailingForcedRefreshByTerminal.has(terminal)) {
+    return
+  }
+  const timer = setTimeout(() => {
+    trailingForcedRefreshByTerminal.delete(terminal)
+    lastForcedRefreshAtByTerminal.set(terminal, now())
+    refreshVisibleRows(
+      terminal,
+      options.shouldRefreshViewportSynchronously?.() ?? true,
+      options.shouldReleaseRenderPause,
+      null
+    )
+  }, FORCED_REFRESH_MIN_MS)
+  timer.unref?.()
+  trailingForcedRefreshByTerminal.set(terminal, timer)
+}
+
+function takeForcedRefreshSlot(
+  terminal: ForegroundTerminalOutputTarget,
+  options: ForegroundTerminalWriteOptions
+): boolean {
+  const last = lastForcedRefreshAtByTerminal.get(terminal) ?? Number.NEGATIVE_INFINITY
+  if (now() - last >= FORCED_REFRESH_MIN_MS) {
+    lastForcedRefreshAtByTerminal.set(terminal, now())
+    cancelTrailingForcedRefresh(terminal)
+    return true
+  }
+  scheduleTrailingForcedRefresh(terminal, options)
+  return false
 }
 
 const pendingViewportSettleRefreshByTerminal = new WeakMap<
@@ -191,9 +251,11 @@ export function writeForegroundTerminalChunk(
   data: string,
   options: ForegroundTerminalWriteOptions = {}
 ): boolean {
-  const beforeWriteViewport = options.forceViewportRefresh
-    ? captureViewportSnapshot(terminal)
-    : null
+  let forcedRefresh = options.forceViewportRefresh === true
+  if (forcedRefresh && options.throttleForcedRefresh === true) {
+    forcedRefresh = takeForcedRefreshSlot(terminal, options)
+  }
+  const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
   if (beforeWriteViewport) {
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
@@ -223,5 +285,6 @@ export function writeForegroundTerminalChunk(
 
 export function discardForegroundRenderSettle(terminal: ForegroundTerminalOutputTarget): void {
   cancelScheduledViewportSettleRefresh(terminal)
+  cancelTrailingForcedRefresh(terminal)
   disposeParsedDirtyRows(terminal)
 }
