@@ -584,8 +584,8 @@ describe('extension subframe listener retirement', () => {
 
   it.each([1, 10, 100])('visits frame registrations linearly for %s extensions', async (count) => {
     const { sess, state } = isolatedSession()
-    const pages = []
-    const ids = []
+    const pages: ReturnType<typeof frameEvent>[] = []
+    const ids: string[] = []
     try {
       for (let index = 0; index < count; index++) {
         const suffix = index
