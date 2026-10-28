@@ -202,6 +202,7 @@ export function installPaneHostCapabilityFlags(session: ConnectPanePtySession): 
   session.hadExistingPaneTransportAtConnect = session.deps.paneTransportsRef.current.size > 0
   session.lastTerminalInputAt = Number.NEGATIVE_INFINITY
   session.lastInteractiveRedrawInputAt = Number.NEGATIVE_INFINITY
+  session.lastForcedForegroundRefreshAt = Number.NEGATIVE_INFINITY
   session.inputEchoDelay = createTerminalInputEchoDelay()
   session.hasReceivedPtyOutput = false
   session.deferredReattachLiveData = null
