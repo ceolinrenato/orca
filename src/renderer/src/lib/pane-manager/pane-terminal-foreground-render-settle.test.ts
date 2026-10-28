@@ -218,4 +218,35 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
       vi.useRealTimers()
     }
   })
+
+  it('drops a trailing repair a later repair already covers', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+      const pending: (() => void)[] = []
+      terminal.write = (_data: string, callback?: () => void) => {
+        if (callback) {
+          pending.push(callback)
+        }
+      }
+
+      writeForegroundTerminalChunk(terminal, 'prime', throttled)
+      vi.advanceTimersByTime(10)
+      writeForegroundTerminalChunk(terminal, 'suppressed', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS)
+      // Claims the slot and, once its parse lands, repairs every row the suppressed batch dirtied.
+      writeForegroundTerminalChunk(terminal, 'later', throttled)
+
+      // Land the parses so the suppressed batch arms a trailing timer after the slot was claimed.
+      for (const run of pending) {
+        run()
+      }
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS * 2)
+
+      // prime + later only; the trailing repair would be a redundant full-span repaint.
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

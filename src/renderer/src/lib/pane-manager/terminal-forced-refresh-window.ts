@@ -1,11 +1,8 @@
 /** Bounds how often a throttled foreground repair runs: sustained output repaints its own dirty rows in between. */
 export const FORCED_REFRESH_MIN_MS = 100
 
-export type ForcedRefreshTarget = {
-  rows?: number
-  _core?: { refresh?(start: number, end: number, sync?: boolean): void }
-  refresh?(start: number, end: number): void
-}
+/** Only the terminal's identity matters here; its rows and refresh belong to the caller's repair. */
+type ForcedRefreshTarget = object
 
 type ForcedRefreshState = {
   lastRepairAt: number
@@ -16,6 +13,7 @@ type ForcedRefreshState = {
 
 const stateByTerminal = new WeakMap<ForcedRefreshTarget, ForcedRefreshState>()
 
+/** Lazily create the per-terminal window state; absent means "no repair yet, nothing pending". */
 function stateFor(terminal: ForcedRefreshTarget): ForcedRefreshState {
   let state = stateByTerminal.get(terminal)
   if (!state) {
@@ -91,6 +89,15 @@ export function armTrailingForcedRefresh(terminal: ForcedRefreshTarget, repair: 
   }, FORCED_REFRESH_MIN_MS)
   timer.unref?.()
   state.trailingTimer = timer
+}
+
+/** Drop a pending trailing repair once no suppressed parse can still dirty rows; the completed repair already covers them. */
+export function cancelTrailingForcedRefreshWhenIdle(terminal: ForcedRefreshTarget): void {
+  const state = stateByTerminal.get(terminal)
+  if (!state || state.suppressedParsesInFlight > 0) {
+    return
+  }
+  cancelTrailingForcedRefresh(terminal)
 }
 
 /** Drop a pending trailing repair; a live repair is about to own those rows. */

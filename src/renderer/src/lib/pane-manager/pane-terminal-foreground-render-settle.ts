@@ -1,6 +1,7 @@
 import { forceRepaintThroughRenderPause } from './terminal-render-pause-release'
 import {
   armTrailingForcedRefresh,
+  cancelTrailingForcedRefreshWhenIdle,
   consumeSuppressedFollowupRefresh,
   discardForcedRefreshWindow,
   noteSuppressedParseLanded,
@@ -57,6 +58,7 @@ type ViewportSnapshot = {
   viewportY: number | null
 }
 
+/** Repaint the given row span (or the whole grid for `null`), preferring the synchronous repaint when the writer needs one. */
 function refreshVisibleRows(
   terminal: ForegroundTerminalOutputTarget,
   synchronously: boolean,
@@ -91,6 +93,7 @@ function refreshVisibleRows(
   }
 }
 
+/** Snapshot the viewport fields that decide whether the write's row coordinates are still valid. */
 function captureViewportSnapshot(terminal: ForegroundTerminalOutputTarget): ViewportSnapshot {
   const active = terminal.buffer?.active
   return {
@@ -101,6 +104,7 @@ function captureViewportSnapshot(terminal: ForegroundTerminalOutputTarget): View
   }
 }
 
+/** A scroll or buffer flip invalidates the dirty-row coordinates, so the repair has to fall back to a full repaint. */
 function viewportChangedDuringWrite(
   beforeWrite: ViewportSnapshot,
   afterWrite: ViewportSnapshot
@@ -136,6 +140,7 @@ function repairRowSpan(
   return { start, end }
 }
 
+/** Drop the queued next-frame settle repaint; a newer write is about to replace it. */
 function cancelScheduledViewportSettleRefresh(terminal: ForegroundTerminalOutputTarget): void {
   const pending = pendingViewportSettleRefreshByTerminal.get(terminal)
   if (!pending) {
@@ -151,6 +156,7 @@ function cancelScheduledViewportSettleRefresh(terminal: ForegroundTerminalOutput
   clearTimeout(pending.id)
 }
 
+/** Queue one next-frame repaint for the rows Chromium can paint late (scrolled top rows, Windows in-place rewrites). */
 function scheduleViewportSettleRefresh(
   terminal: ForegroundTerminalOutputTarget,
   shouldRefreshSynchronously?: () => boolean,
@@ -208,6 +214,8 @@ function settleForegroundRender(
   if (spanSinceLastRepair) {
     // Why: a throttled repair owns every row dirtied since the previous one, so its window restarts after the read.
     resetParsedDirtyRows(terminal)
+    // This repair covers every row dirtied so far; a trailing repair armed meanwhile would only duplicate it.
+    cancelTrailingForcedRefreshWhenIdle(terminal)
   }
   refreshVisibleRows(
     terminal,
@@ -254,8 +262,14 @@ export function writeForegroundTerminalChunk(
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
   }
-  // Arm from the parse callback: a repair taken mid-parse misses rows that parse has not reached yet.
+  // Arm from the parse callback: a repair taken mid-parse misses rows the rest of that parse dirties.
+  // A write settles once, by callback or by the synchronous failure below, so guard against both.
+  let parseSettled = false
   const armSuppressedRepairWhenParsed = (): void => {
+    if (parseSettled) {
+      return
+    }
+    parseSettled = true
     if (noteSuppressedParseLanded(terminal)) {
       armTrailingForcedRefresh(terminal, () => repairSuppressedForegroundRows(terminal, options))
     }
