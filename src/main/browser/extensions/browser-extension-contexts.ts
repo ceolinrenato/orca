@@ -153,10 +153,12 @@ export function setFrameListening(
   setListenerFilters(context.filters, key, active ? filters : undefined)
   if (!trackedWebContents.has(webContents)) {
     trackedWebContents.add(webContents)
+    const webSession = webContents.session
+    const webContentsId = webContents.id
     abortWhenRendererGone(webContents).signal.addEventListener('abort', () => {
       trackedWebContents.delete(webContents)
-      stateBySession.get(webContents.session)?.frames.forEach((candidate, candidateKey, frames) => {
-        if (candidate.webContentsId === webContents.id) {
+      stateBySession.get(webSession)?.frames.forEach((candidate, candidateKey, frames) => {
+        if (candidate.webContentsId === webContentsId) {
           frames.delete(candidateKey)
         }
       })

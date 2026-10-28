@@ -288,6 +288,15 @@ describe('extension frame document ownership', () => {
       sibling.event.sender.id = 88
       await expect(invoke(original.event, listen)).resolves.toEqual({ ok: true, value: undefined })
       await invoke(sibling.event, listen)
+      if (retirement === 'destroyed') {
+        for (const property of ['session', 'id']) {
+          Object.defineProperty(original.event.sender, property, {
+            get: () => {
+              throw new TypeError('Object has been destroyed')
+            }
+          })
+        }
+      }
       original.event.sender.emit(retirement)
       host.emitBrowserExtensionEvent({}, 'probe', 'onPing', ['after retirement'])
       expect(original.frame.send).not.toHaveBeenCalled()
