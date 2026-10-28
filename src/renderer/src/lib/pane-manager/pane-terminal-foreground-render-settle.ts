@@ -46,6 +46,7 @@ const trailingForcedRefreshByTerminal = new WeakMap<
 // Why: a suppressed repair still owes its next-frame repaint, so the repair that lands has to honor it.
 const suppressedFollowupRefreshByTerminal = new WeakMap<ForegroundTerminalOutputTarget, boolean>()
 
+/** Remember the next-frame repaint a suppressed repair was asked for. */
 function noteSuppressedFollowupRefresh(
   terminal: ForegroundTerminalOutputTarget,
   options: ForegroundTerminalWriteOptions
@@ -61,10 +62,12 @@ function consumeSuppressedFollowupRefresh(terminal: ForegroundTerminalOutputTarg
   return pending
 }
 
+/** One time base, so every window comparison measures the same clock. */
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
+/** Drop the pending trailing repair; a live repair is about to own those rows. */
 function cancelTrailingForcedRefresh(terminal: ForegroundTerminalOutputTarget): void {
   const timer = trailingForcedRefreshByTerminal.get(terminal)
   if (timer === undefined) {
@@ -106,6 +109,7 @@ function scheduleTrailingForcedRefresh(
   trailingForcedRefreshByTerminal.set(terminal, timer)
 }
 
+/** Claim the throttled repair slot, or arm the trailing repair that stands in for it. */
 function takeForcedRefreshSlot(
   terminal: ForegroundTerminalOutputTarget,
   options: ForegroundTerminalWriteOptions
@@ -248,6 +252,7 @@ function scheduleViewportSettleRefresh(
   pendingViewportSettleRefreshByTerminal.set(terminal, { kind: 'timeout', id })
 }
 
+/** Repair the rows this parse dirtied plus cursor rows, and schedule the next-frame repaint when one is owed. */
 function settleForegroundRender(
   terminal: ForegroundTerminalOutputTarget,
   beforeWriteViewport: ViewportSnapshot,
@@ -280,6 +285,7 @@ function settleForegroundRender(
   }
 }
 
+/** Write a foreground chunk and run its repair; throttled writers opt into the bounded repair window. */
 export function writeForegroundTerminalChunk(
   terminal: ForegroundTerminalOutputTarget,
   data: string,
