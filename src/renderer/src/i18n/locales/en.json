@@ -18628,6 +18628,9 @@
         "comments": "{{count}} comments",
         "unavailable": "Preview unavailable.",
         "retry": "Retry"
+      },
+      "webPeek": {
+        "unavailable": "No preview for this page."
       }
     },
     "tab": {
@@ -19010,7 +19013,12 @@
         "queueSearchSteer": "steer",
         "shellEnvSearchVariables": "environment variables",
         "shellEnvSearchPath": "PATH",
-        "shellEnvSearchProxy": "proxy"
+        "shellEnvSearchProxy": "proxy",
+        "linkPreviewsToggleLabel": "Toggle link previews",
+        "linkPreviewsTitle": "Link previews",
+        "linkPreviewsCopy": "Hovering a web link shows a preview card. Orca fetches the page to build it, so the site can see the request.",
+        "linkPreviewsSearchUnfurl": "unfurl",
+        "linkPreviewsSearchHover": "hover card"
       }
     },
     "agentChildRow": {

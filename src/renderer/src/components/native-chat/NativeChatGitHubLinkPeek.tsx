@@ -1,5 +1,3 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { Button } from '@/components/ui/button'
 import { GitHubIcon } from '@/components/icons/GitHubIcon'
 import { GitHubUserAvatar } from '@/components/github/github-user-avatar'
@@ -15,42 +13,7 @@ import {
   readCachedGitHubLinkPreview
 } from './native-chat-github-link-preview'
 import { githubLinkBelongsToRepo, type NativeChatGitHubRepo } from './native-chat-github-repo'
-
-type PreviewState =
-  | { status: 'loading' }
-  | { status: 'ready'; item: GitHubWorkItem }
-  | { status: 'failed' }
-
-function usePreview(
-  repo: Repo,
-  link: GitHubIssueOrPRLink
-): {
-  state: PreviewState
-  retry: () => void
-} {
-  const [attempt, setAttempt] = useState(0)
-  const [state, setState] = useState<PreviewState>(() => {
-    const cached = readCachedGitHubLinkPreview(repo, link)
-    return cached ? { status: 'ready', item: cached } : { status: 'loading' }
-  })
-  useEffect(() => {
-    let cancelled = false
-    loadGitHubLinkPreview(repo, link).then(
-      (item) => !cancelled && setState(item ? { status: 'ready', item } : { status: 'failed' }),
-      () => !cancelled && setState({ status: 'failed' })
-    )
-    return () => {
-      cancelled = true
-    }
-  }, [repo, link, attempt])
-  return {
-    state,
-    retry: () => {
-      setState({ status: 'loading' })
-      setAttempt((value) => value + 1)
-    }
-  }
-}
+import { useNativeChatHoverPreview } from './use-native-chat-hover-preview'
 
 function PeekFooter({ item }: { item: GitHubWorkItem }): React.JSX.Element {
   return (
@@ -95,8 +58,19 @@ function PeekFooter({ item }: { item: GitHubWorkItem }): React.JSX.Element {
   )
 }
 
-function PeekBody({ repo, link }: { repo: Repo; link: GitHubIssueOrPRLink }): React.JSX.Element {
-  const { state, retry } = usePreview(repo, link)
+export function NativeChatGitHubPeekBody({
+  repo,
+  link
+}: {
+  repo: Repo
+  link: GitHubIssueOrPRLink
+}): React.JSX.Element {
+  const key = `${repo.id}:${link.slug.host ?? ''}/${link.slug.owner}/${link.slug.repo}#${link.number}:${link.type}`
+  const { state, retry } = useNativeChatHoverPreview(
+    key,
+    () => readCachedGitHubLinkPreview(repo, link),
+    () => loadGitHubLinkPreview(repo, link)
+  )
   return (
     <div className="flex flex-col gap-1.5">
       {/* Known from the URL, so the card has a header before the lookup answers. */}
@@ -108,7 +82,7 @@ function PeekBody({ repo, link }: { repo: Repo; link: GitHubIssueOrPRLink }): Re
         <span className="shrink-0 font-mono">#{link.number}</span>
         {state.status === 'ready' ? (
           <WorkItemStateBadge
-            item={state.item}
+            item={state.value}
             closedIssue="neutral"
             className="ml-auto h-4.5 px-1.5 text-2xs"
           />
@@ -117,11 +91,11 @@ function PeekBody({ repo, link }: { repo: Repo; link: GitHubIssueOrPRLink }): Re
       {state.status === 'ready' ? (
         <>
           <div className="line-clamp-2 text-sm font-semibold text-foreground">
-            {state.item.title}
+            {state.value.title}
           </div>
-          {state.item.type === 'issue' && state.item.labels.length > 0 ? (
+          {state.value.type === 'issue' && state.value.labels.length > 0 ? (
             <div className="flex flex-wrap gap-1">
-              {state.item.labels.slice(0, 4).map((label) => (
+              {state.value.labels.slice(0, 4).map((label) => (
                 <span
                   key={label}
                   className="rounded-full border border-border px-1.5 text-3xs text-muted-foreground"
@@ -131,7 +105,7 @@ function PeekBody({ repo, link }: { repo: Repo; link: GitHubIssueOrPRLink }): Re
               ))}
             </div>
           ) : null}
-          <PeekFooter item={state.item} />
+          <PeekFooter item={state.value} />
         </>
       ) : state.status === 'loading' ? (
         <div aria-hidden className="flex flex-col gap-1.5 motion-safe:animate-pulse">
@@ -153,30 +127,11 @@ function PeekBody({ repo, link }: { repo: Repo; link: GitHubIssueOrPRLink }): Re
   )
 }
 
-/** Hover or focus a PR/issue link into the chat's own GitHub repo to see its title, state and author. */
-export function NativeChatGitHubLinkPeek({
-  githubRepo,
-  href,
-  children
-}: {
-  githubRepo: NativeChatGitHubRepo | null
-  href: string | undefined
-  children: ReactNode
-}): ReactNode {
-  const [open, setOpen] = useState(false)
-  const link = useMemo(() => (href ? parseGitHubIssueOrPRLink(href) : null), [href])
-  if (!githubRepo || !link || !githubLinkBelongsToRepo(githubRepo, link.slug)) {
-    return children
-  }
-  return (
-    <HoverCard open={open} onOpenChange={setOpen} openDelay={350} closeDelay={120}>
-      <HoverCardTrigger asChild>
-        {/* A click opens the link (or its action popover); the peek must not sit on top of it. */}
-        <span onClickCapture={() => setOpen(false)}>{children}</span>
-      </HoverCardTrigger>
-      <HoverCardContent side="top" align="start" className="w-96">
-        <PeekBody key={href} repo={githubRepo.repo} link={link} />
-      </HoverCardContent>
-    </HoverCard>
-  )
+/** A PR or issue link into the chat's own GitHub repo, or null when the link isn't one. */
+export function resolveGitHubPeekLink(
+  githubRepo: NativeChatGitHubRepo | null,
+  href: string
+): GitHubIssueOrPRLink | null {
+  const link = githubRepo ? parseGitHubIssueOrPRLink(href) : null
+  return githubRepo && link && githubLinkBelongsToRepo(githubRepo, link.slug) ? link : null
 }

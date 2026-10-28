@@ -24,8 +24,8 @@ import {
   NativeChatMarkdownImageLinkContext
 } from './NativeChatMarkdownImage'
 import { remarkNativeChatFileDestinations } from './native-chat-markdown-file-destinations'
-import { NativeChatGitHubLinkPeek } from './NativeChatGitHubLinkPeek'
-import { NativeChatGitHubRepoContext } from './native-chat-github-repo'
+import { NativeChatLinkPeek } from './NativeChatLinkPeek'
+import { NativeChatLinkPeekContext } from './native-chat-link-peek-context'
 import './native-chat-markdown.css'
 
 /** Existing words stay opaque when a reply first starts growing. */
@@ -64,20 +64,6 @@ function withFileDestinations(
 
 type MarkdownElementProps = { node?: { tagName: string }; children?: ReactNode }
 
-function NativeChatPeekableLink({
-  href,
-  children
-}: {
-  href: string | undefined
-  children: ReactNode
-}): ReactNode {
-  return (
-    <NativeChatGitHubLinkPeek githubRepo={useContext(NativeChatGitHubRepoContext)} href={href}>
-      {children}
-    </NativeChatGitHubLinkPeek>
-  )
-}
-
 function containsImage(children: ReactNode): boolean {
   return Children.toArray(children).some(
     (child) =>
@@ -101,13 +87,13 @@ function createNativeChatImageExtension(
       ),
       a: (props) => {
         const renderAnchor = (children: ReactNode): ReactNode => (
-          <NativeChatPeekableLink href={props.href}>
+          <NativeChatLinkPeek href={props.href}>
             {typeof Anchor === 'function' ? (
               <Anchor {...props}>{children}</Anchor>
             ) : (
               <a href={props.href}>{children}</a>
             )}
-          </NativeChatPeekableLink>
+          </NativeChatLinkPeek>
         )
         const renderChild = (child: ReactNode): ReactNode => {
           if (!isValidElement<MarkdownElementProps>(child) || !containsImage(child)) {
@@ -152,7 +138,7 @@ export function NativeChatMarkdown({
     [onLinkClick, variant, visualExtension]
   )
   const fileLinkExists = useNativeChatFileLinkExists(linkifyFilePaths, streaming)
-  const githubRepo = useContext(NativeChatGitHubRepoContext)
+  const { githubRepo } = useContext(NativeChatLinkPeekContext)
   return (
     <NativeChatMarkdownRowKeyContext.Provider value={rowKey}>
       <CommentMarkdown

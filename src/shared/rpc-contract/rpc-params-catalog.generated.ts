@@ -416,6 +416,7 @@ import {
   WorkspaceSelection
 } from './linear-params'
 import { CreateProject } from './linear-project-create-params'
+import { LinkPreviewGetParams } from './link-preview-params'
 import {
   ManagedRuntimeAgentParams,
   ManagedRuntimeCancelParams
@@ -1192,6 +1193,7 @@ export const RPC_PARAMS_BY_METHOD = {
   'linear.teamStates': TeamId,
   'linear.testConnection': WorkspaceSelection,
   'linear.updateIssue': IssueUpdateOfLinearParams,
+  'linkPreview.get': LinkPreviewGetParams,
   'managedRuntime.cancel': ManagedRuntimeCancelParams,
   'managedRuntime.install': ManagedRuntimeAgentParams,
   'managedRuntime.remove': ManagedRuntimeAgentParams,

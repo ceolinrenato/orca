@@ -1,4 +1,4 @@
-import { createContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '@/store'
 import { findKnownWorktreeById } from '@/store/slices/worktrees/listing/detected-worktree-meta'
 import { resolveRepoSlug } from '@/lib/repo-slug-index'
@@ -32,10 +32,10 @@ function ownerRepoFromKey(key: string): { owner: string; repo: string } | null {
   return owner && repo ? { owner, repo } : null
 }
 
-export const NativeChatGitHubRepoContext = createContext<NativeChatGitHubRepo | null>(null)
-
 /** The git repo behind the chat's workspace, with its GitHub remotes once resolved. */
-function useNativeChatGitHubRepo(worktreeId: string | undefined): NativeChatGitHubRepo | null {
+export function useNativeChatGitHubRepo(
+  worktreeId: string | undefined
+): NativeChatGitHubRepo | null {
   const repo = useAppStore((state) => {
     const worktree = worktreeId ? findKnownWorktreeById(state, worktreeId) : null
     if (!worktree) {
@@ -93,20 +93,4 @@ export function githubLinkBelongsToRepo(
   slug: { owner: string; repo: string; host?: string }
 ): boolean {
   return repo.identityKeys.includes(githubRepoIdentityKey(slug))
-}
-
-/** Resolved once per chat; every message's links read it. */
-export function NativeChatGitHubRepoProvider({
-  worktreeId,
-  children
-}: {
-  worktreeId: string | undefined
-  children: ReactNode
-}): React.JSX.Element {
-  const githubRepo = useNativeChatGitHubRepo(worktreeId)
-  return (
-    <NativeChatGitHubRepoContext.Provider value={githubRepo}>
-      {children}
-    </NativeChatGitHubRepoContext.Provider>
-  )
 }
