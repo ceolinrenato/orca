@@ -219,7 +219,29 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
     }
   })
 
-  it('drops a trailing repair a later repair already covers', () => {
+  it('drops a trailing repair a later eligible repair already covers', () => {
+    vi.useFakeTimers()
+    try {
+      const { terminal } = createTerminal(false)
+
+      writeForegroundTerminalChunk(terminal, 'prime', throttled)
+      vi.advanceTimersByTime(10)
+      // Suppressed, so it arms a trailing repair for t=110.
+      writeForegroundTerminalChunk(terminal, 'suppressed', throttled)
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS - 5)
+      // Reopens the window first and claims the slot, cancelling that pending timer.
+      writeForegroundTerminalChunk(terminal, 'later', throttled)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS * 2)
+      // prime + later only; the trailing repair would be a redundant full-span repaint.
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('throttles the repair, not the submission, when buffered callbacks drain together', () => {
     vi.useFakeTimers()
     try {
       const { terminal } = createTerminal(false)
@@ -230,20 +252,18 @@ describe('writeForegroundTerminalChunk forced refresh throttle', () => {
         }
       }
 
-      writeForegroundTerminalChunk(terminal, 'prime', throttled)
-      vi.advanceTimersByTime(10)
-      writeForegroundTerminalChunk(terminal, 'suppressed', throttled)
+      // Two submissions a full window apart, with both parses still pending.
+      writeForegroundTerminalChunk(terminal, 'first', throttled)
       vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS)
-      // Claims the slot and, once its parse lands, repairs every row the suppressed batch dirtied.
-      writeForegroundTerminalChunk(terminal, 'later', throttled)
+      writeForegroundTerminalChunk(terminal, 'second', throttled)
 
-      // Land the parses so the suppressed batch arms a trailing timer after the slot was claimed.
+      // xterm drains both callbacks together: only the first may repair.
       for (const run of pending) {
         run()
       }
-      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS * 2)
+      expect(terminal._core.refresh).toHaveBeenCalledTimes(1)
 
-      // prime + later only; the trailing repair would be a redundant full-span repaint.
+      vi.advanceTimersByTime(FORCED_REFRESH_MIN_MS + 1)
       expect(terminal._core.refresh).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()

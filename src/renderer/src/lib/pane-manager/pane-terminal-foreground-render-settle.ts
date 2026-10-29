@@ -4,9 +4,11 @@ import {
   cancelTrailingForcedRefreshWhenIdle,
   consumeSuppressedFollowupRefresh,
   discardForcedRefreshWindow,
-  hasPendingSuppressedRepair,
+  hasForegroundParseInFlight,
+  isSuppressedRepairOwed,
   markSuppressedRepairCovered,
-  noteSuppressedParseLanded,
+  noteForegroundParseLanded,
+  noteForegroundParseStarted,
   noteSuppressedRepair,
   takeForcedRefreshSlot
 } from './terminal-forced-refresh-window'
@@ -248,55 +250,68 @@ export function writeForegroundTerminalChunk(
   options: ForegroundTerminalWriteOptions = {}
 ): boolean {
   const throttled = options.throttleForcedRefresh === true
-  let forcedRefresh = options.forceViewportRefresh === true
-  let followupViewportRefresh = options.followupViewportRefresh === true
-  let suppressedForcedRefresh = false
-  if (forcedRefresh && throttled) {
-    forcedRefresh = takeForcedRefreshSlot(terminal)
-    if (forcedRefresh) {
-      // Why: this repair stands in for every suppressed batch, including the next-frame repaint they asked for.
-      followupViewportRefresh =
-        consumeSuppressedFollowupRefresh(terminal) || followupViewportRefresh
-    } else {
-      suppressedForcedRefresh = true
-      noteSuppressedRepair(terminal, options)
-    }
-  }
-  const beforeWriteViewport = forcedRefresh ? captureViewportSnapshot(terminal) : null
-  // Replay must not reset away rows an owed suppressed repair still has to cover; the wider span is repainted instead.
-  if (beforeWriteViewport && !throttled && !hasPendingSuppressedRepair(terminal)) {
+  const requestsForcedRefresh = options.forceViewportRefresh === true
+  const throttledRepair = throttled && requestsForcedRefresh
+  // Snapshot before the write regardless of the throttle: the span must describe the viewport this parse starts from.
+  const beforeWriteViewport = requestsForcedRefresh ? captureViewportSnapshot(terminal) : null
+  // Replay must not reset away rows a pending throttled parse may still emit; the wider span is repainted instead.
+  if (
+    beforeWriteViewport &&
+    !throttled &&
+    !hasForegroundParseInFlight(terminal) &&
+    !isSuppressedRepairOwed(terminal)
+  ) {
     // Capture here: xterm emits dirty rows between write submission and callback; span must cover only this parse.
     resetParsedDirtyRows(terminal)
   }
-  // Arm from the parse callback: a repair taken mid-parse misses rows the rest of that parse dirties.
+  if (throttledRepair) {
+    noteForegroundParseStarted(terminal)
+  }
   // A write settles once, by callback or by the synchronous failure below, so guard against both.
   let parseSettled = false
-  const armSuppressedRepairWhenParsed = (): void => {
+  const landThrottledParse = (): boolean => {
     if (parseSettled) {
-      return
+      return false
     }
     parseSettled = true
-    if (noteSuppressedParseLanded(terminal)) {
+    return throttledRepair && noteForegroundParseLanded(terminal)
+  }
+  // Throttle where the repair runs, not where it is submitted: xterm drains buffered callbacks together, so
+  // submissions a window apart would otherwise repair back-to-back.
+  const runRepair = (): void => {
+    if (!beforeWriteViewport) {
+      return
+    }
+    if (throttled && !takeForcedRefreshSlot(terminal)) {
+      noteSuppressedRepair(terminal, options)
+      return
+    }
+    // Why: this repair stands in for every suppressed batch, including the next-frame repaint they asked for.
+    const followupViewportRefresh =
+      consumeSuppressedFollowupRefresh(terminal) || options.followupViewportRefresh === true
+    runGuardedWriteCompletionStep('foreground-render-settle', () =>
+      settleForegroundRender(
+        terminal,
+        beforeWriteViewport,
+        options,
+        throttled,
+        followupViewportRefresh
+      )
+    )
+  }
+  const armSuppressedRepairWhenIdle = (): void => {
+    if (isSuppressedRepairOwed(terminal)) {
       armTrailingForcedRefresh(terminal, () => repairSuppressedForegroundRows(terminal, options))
     }
   }
   // WriteBuffer callbacks must never throw (xterm-write-callback-guard.ts); guard settle/onParsed independently so renderer failure cannot strand replay guards.
   const runParsedSteps = (): void => {
-    if (beforeWriteViewport) {
-      runGuardedWriteCompletionStep('foreground-render-settle', () =>
-        settleForegroundRender(
-          terminal,
-          beforeWriteViewport,
-          options,
-          throttled,
-          followupViewportRefresh
-        )
-      )
-    }
-    if (suppressedForcedRefresh) {
+    const lastPending = landThrottledParse()
+    runRepair()
+    if (lastPending) {
       runGuardedWriteCompletionStep(
         'foreground-suppressed-parse-settled',
-        armSuppressedRepairWhenParsed
+        armSuppressedRepairWhenIdle
       )
     }
     if (options.onParsed) {
@@ -308,10 +323,10 @@ export function writeForegroundTerminalChunk(
     return true
   } catch {
     // A synchronous failure ends this batch without a callback, so its owed repair must not wait on one.
-    if (suppressedForcedRefresh) {
+    if (landThrottledParse()) {
       runGuardedWriteCompletionStep(
         'foreground-suppressed-parse-settled',
-        armSuppressedRepairWhenParsed
+        armSuppressedRepairWhenIdle
       )
     }
     // Synchronous failure requires recovery but proves no parser liveness; keep it distinct from parse completion.

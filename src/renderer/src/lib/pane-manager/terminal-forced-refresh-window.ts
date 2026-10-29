@@ -7,8 +7,8 @@ type ForcedRefreshTarget = WeakKey
 type ForcedRefreshState = {
   lastRepairAt: number
   trailingTimer: ReturnType<typeof setTimeout> | null
-  suppressedParsesInFlight: number
-  suppressedRepairOwed: boolean
+  parsesInFlight: number
+  repairOwed: boolean
   suppressedFollowupRefresh: boolean
 }
 
@@ -21,8 +21,8 @@ function stateFor(terminal: ForcedRefreshTarget): ForcedRefreshState {
     state = {
       lastRepairAt: Number.NEGATIVE_INFINITY,
       trailingTimer: null,
-      suppressedParsesInFlight: 0,
-      suppressedRepairOwed: false,
+      parsesInFlight: 0,
+      repairOwed: false,
       suppressedFollowupRefresh: false
     }
     stateByTerminal.set(terminal, state)
@@ -35,7 +35,7 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
-/** Claim the throttled repair slot, or report that the repair belongs to the trailing path. */
+/** Claim the repair slot for a repair about to run, or report that the window has not elapsed. */
 export function takeForcedRefreshSlot(terminal: ForcedRefreshTarget): boolean {
   const state = stateFor(terminal)
   if (now() - state.lastRepairAt < FORCED_REFRESH_MIN_MS) {
@@ -46,29 +46,44 @@ export function takeForcedRefreshSlot(terminal: ForcedRefreshTarget): boolean {
   return true
 }
 
-/** Remember a suppressed repair: the next-frame repaint it asked for, the parse it still owes, and the rows it is owed a repair for. */
+/** Track a throttled parse from submission to callback, so a repair cannot run while rows are still arriving. */
+export function noteForegroundParseStarted(terminal: ForcedRefreshTarget): void {
+  stateFor(terminal).parsesInFlight += 1
+}
+
+/** Returns true once the last tracked parse has landed, so a repair can no longer run mid-backlog. */
+export function noteForegroundParseLanded(terminal: ForcedRefreshTarget): boolean {
+  const state = stateFor(terminal)
+  state.parsesInFlight = Math.max(0, state.parsesInFlight - 1)
+  return state.parsesInFlight === 0
+}
+
+export function hasForegroundParseInFlight(terminal: ForcedRefreshTarget): boolean {
+  return (stateByTerminal.get(terminal)?.parsesInFlight ?? 0) > 0
+}
+
+/** Remember a suppressed repair: the next-frame repaint it asked for, and the rows it is owed. */
 export function noteSuppressedRepair(
   terminal: ForcedRefreshTarget,
   options: { followupViewportRefresh?: boolean }
 ): void {
   const state = stateFor(terminal)
-  state.suppressedParsesInFlight += 1
-  state.suppressedRepairOwed = true
+  state.repairOwed = true
   if (options.followupViewportRefresh) {
     state.suppressedFollowupRefresh = true
   }
 }
 
 /** True while a suppressed batch is still owed a repair — even after a slot claim cancelled its trailing timer. */
-export function hasPendingSuppressedRepair(terminal: ForcedRefreshTarget): boolean {
-  return stateByTerminal.get(terminal)?.suppressedRepairOwed === true
+export function isSuppressedRepairOwed(terminal: ForcedRefreshTarget): boolean {
+  return stateByTerminal.get(terminal)?.repairOwed === true
 }
 
-/** Clear the obligation only once a repair has covered those rows and no suppressed parse can still add more. */
+/** Clear the obligation only once a repair has covered those rows and no parse can still add more. */
 export function markSuppressedRepairCovered(terminal: ForcedRefreshTarget): void {
   const state = stateByTerminal.get(terminal)
-  if (state && state.suppressedParsesInFlight === 0) {
-    state.suppressedRepairOwed = false
+  if (state && state.parsesInFlight === 0) {
+    state.repairOwed = false
   }
 }
 
@@ -80,14 +95,7 @@ export function consumeSuppressedFollowupRefresh(terminal: ForcedRefreshTarget):
   return pending
 }
 
-/** Returns true once the last suppressed parse has landed, so a repair can no longer run mid-backlog. */
-export function noteSuppressedParseLanded(terminal: ForcedRefreshTarget): boolean {
-  const state = stateFor(terminal)
-  state.suppressedParsesInFlight = Math.max(0, state.suppressedParsesInFlight - 1)
-  return state.suppressedParsesInFlight === 0
-}
-
-/** Run `repair` once the window elapses and no suppressed parse is still in flight. */
+/** Run `repair` once the window elapses and no tracked parse is still in flight. */
 export function armTrailingForcedRefresh(terminal: ForcedRefreshTarget, repair: () => void): void {
   const state = stateFor(terminal)
   if (state.trailingTimer !== null) {
@@ -95,7 +103,7 @@ export function armTrailingForcedRefresh(terminal: ForcedRefreshTarget, repair: 
   }
   const timer = setTimeout(() => {
     state.trailingTimer = null
-    if (state.suppressedParsesInFlight > 0) {
+    if (state.parsesInFlight > 0) {
       // A repair taken mid-parse cannot cover rows that parse has not reached; its own callback arms again.
       return
     }
@@ -106,10 +114,10 @@ export function armTrailingForcedRefresh(terminal: ForcedRefreshTarget, repair: 
   state.trailingTimer = timer
 }
 
-/** Drop a pending trailing repair once no suppressed parse can still dirty rows; the completed repair already covers them. */
+/** Drop a pending trailing repair once no parse can still dirty rows; the completed repair already covers them. */
 export function cancelTrailingForcedRefreshWhenIdle(terminal: ForcedRefreshTarget): void {
   const state = stateByTerminal.get(terminal)
-  if (!state || state.suppressedParsesInFlight > 0) {
+  if (!state || state.parsesInFlight > 0) {
     return
   }
   cancelTrailingForcedRefresh(terminal)
